@@ -1,0 +1,20 @@
+{
+  "name": "rust-quic-rtc",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Rust + QUIC real-time voice server (RVP) — monorepo root tooling",
+  "type": "module",
+  "scripts": {
+    "prepare": "husky",
+    "lint:md": "markdownlint-cli2 \"docs/**/*.md\" \"*.md\"",
+    "format": "prettier --write \"docs/**/*.md\" \"*.md\"",
+    "format:check": "prettier --check \"docs/**/*.md\" \"*.md\""
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^19.8.1",
+    "@commitlint/config-conventional": "^19.8.1",
+    "husky": "^9.1.7",
+    "markdownlint-cli2": "^0.18.1",
+    "prettier": "^3.6.2"
+  }
+}

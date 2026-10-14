@@ -24,7 +24,7 @@ Research date: 2026-10-14 (against current crates.io/pub.dev/docs.rs).
 
 ## 2. Target architecture
 
-```
+```text
 Flutter A ──QUIC/UDP──► ┌─────────────────────────┐
                         │  Rust RVP Media Server   │
 Flutter B ──QUIC/UDP──► │  • TLS 1.3 (rustls)     │
@@ -56,7 +56,7 @@ Deliverable: `docs/protocol-rvp-v1.md` before any implementation.
 
 ### 3.2 Media datagram layout (fixed 16-byte header + Opus payload)
 
-```
+```text
 0        1        2        3        4        5        6        7
 +--------+--------+--------+--------+--------+--------+--------+--------+
 | Ver(4) | Type(4)| Flags  | PT     |        Sequence (u32)             |
@@ -101,7 +101,7 @@ Design decisions to lock in Phase 0:
 
 Planned workspace layout (names only until Phase 1):
 
-```
+```text
 crates/
   rvp-proto/     # packet + control message encode/decode, zero-copy parsers
   rvp-auth/      # JWT verify, claims, rate-limit policy
@@ -146,7 +146,7 @@ apps/
 
 ## 6. Flutter client design
 
-```
+```text
 ui → CallController (Dart)
         ├─ RestApiClient → NestJS (login, grant)
         ├─ QuicTransport → (platform bridge) → quinn
@@ -190,7 +190,7 @@ Second real client: a browser **phone-call app** (login, room list, roster, mute
 - **Pairwise crypto via WebCrypto** AES-GCM — same NestJS-delivered per-pair keys and `kid` rotation as Flutter (ADR-004). Pairwise cost applies too: N−1 datagrams per 20 ms frame per publisher.
 - **Fallback (open decision 8):** WebSocket + same RVP frames if WebTransport is unavailable — degraded (no QUIC CC), not v1-blocking.
 
-```
+```text
 ui → CallController (React hooks)
         ├─ TanStack Query → NestJS REST (login, rooms, grant, pairwise keys)
         ├─ WebTransport (HTTP/3) → RVP control bi-stream + media DATAGRAMs
@@ -347,3 +347,14 @@ LiveKit = mature open-source **WebRTC** SFU (Go/Pion) with a large SDK/ecosystem
 ### 12.3 Build-vs-buy note
 
 If the product goal is "standard video conferencing tomorrow", **LiveKit is the correct buy** and this plan is a research/custom-stack track. RVP is justified when QUIC-native transport, Rust ownership of the media path, default E2EE, or protocol-level control outweigh ecosystem maturity. P7's LiveKit A/B benchmark is the evidence gate for that claim.
+
+---
+
+## 13. Development workflow (production-grade)
+
+Repo: `https://github.com/KaratayBerkay/rust-quic-rpc` · Branch: `main` · Hooks: husky · CI: GitHub Actions.
+
+- **One PR per phase.** Branch naming: `phase/P<N>-<slug>` (e.g. `phase/P0-design`, `phase/P1-quic-echo`, `phase/P2-auth`). `main` is protected by convention: no direct pushes of phase work.
+- **PR gate:** CI green (docs lint + commitlint now; per-phase jobs activate when code lands: `crates/**` → Rust fmt/clippy/test, `apps/flutter` → analyze/test, `apps/web` → lint/build, `services/nest` → lint/test/build), human review, squash-merge with conventional title.
+- **Husky (local):** `pre-commit` = markdownlint on docs; `commit-msg` = commitlint (`config-conventional`). Bypass only via explicit `--no-verify` with review note.
+- **Commit/PR title convention:** `type(scope): summary` — scopes: `docs`, `proto`, `auth`, `server`, `flutter`, `web`, `nest`, `ci`.
