@@ -31,4 +31,4 @@ npm run lint:md    # docs lint
 
 ## License
 
-TBD.
+**PolyForm Noncommercial 1.0.0** — see [`LICENSE`](LICENSE). Personal/hobby/research and noncommercial-organization use only; no commercial use without a separate agreement.

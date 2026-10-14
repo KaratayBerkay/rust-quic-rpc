@@ -2,6 +2,7 @@
   "name": "rust-quic-rtc",
   "private": true,
   "version": "0.0.0",
+  "license": "LicenseRef-PolyForm-Noncommercial",
   "description": "Rust + QUIC real-time voice server (RVP) — monorepo root tooling",
   "type": "module",
   "scripts": {
