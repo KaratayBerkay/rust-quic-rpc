@@ -1,0 +1,12 @@
+[package]
+name = "rvp-crypto"
+description = "RVP pairwise payload crypto (ADR-004): AES-128-GCM seal/open. CLIENTS ONLY — never linked into rvp-server."
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+aes-gcm = { workspace = true }
+thiserror = { workspace = true }

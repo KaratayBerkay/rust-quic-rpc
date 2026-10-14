@@ -1,0 +1,16 @@
+[package]
+name = "rvp-auth"
+description = "RVP auth: EdDSA JWT grant verification (NestJS issuer)"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+jsonwebtoken = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+rcgen = { workspace = true }
