@@ -3,11 +3,12 @@
 //! One dedicated bidirectional QUIC stream per connection.
 //! Frame = `u32 BE length` ‖ `u16 BE type` ‖ body, where `length` covers type+body.
 //!
-//! Messages (P2 subset):
+//! Messages (P3 subset):
 //! - `Hello { protocol_version, grant_jwt }` — client → server, first frame
 //! - `JoinRoom` — client → server (room comes from the verified grant)
-//! - `Welcome { participant_id, max_datagram }` — server → client; only after
-//!   this are DATAGRAMs accepted from the connection (plan §3.4)
+//! - `Welcome { participant_id, max_datagram, roster }` — server → client; only
+//!   after this are DATAGRAMs accepted from the connection (plan §3.4)
+//! - `ParticipantJoined / ParticipantLeft` — server → client room events
 //! - `Error { code, message }` — server → client
 
 use bytes::{BufMut, Bytes, BytesMut};
@@ -15,6 +16,8 @@ use bytes::{BufMut, Bytes, BytesMut};
 pub const TYPE_HELLO: u16 = 1;
 pub const TYPE_JOIN_ROOM: u16 = 2;
 pub const TYPE_WELCOME: u16 = 3;
+pub const TYPE_PARTICIPANT_JOINED: u16 = 4;
+pub const TYPE_PARTICIPANT_LEFT: u16 = 5;
 pub const TYPE_ERROR: u16 = 15;
 
 /// Current control/media protocol version (`Hello.protocol_version`).
@@ -29,8 +32,16 @@ pub mod error_code {
     pub const UNAUTHORIZED: u16 = 401;
     pub const FORBIDDEN: u16 = 403;
     pub const TIMEOUT: u16 = 408;
+    pub const ROOM_FULL: u16 = 429;
     pub const INTERNAL: u16 = 500;
     pub const VERSION_UNSUPPORTED: u16 = 505;
+}
+
+/// A room member advertised in `Welcome` / `ParticipantJoined`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RosterEntry {
+    pub participant_id: u64,
+    pub user_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +54,14 @@ pub enum ControlMessage {
     Welcome {
         participant_id: u64,
         max_datagram: u16,
+        roster: Vec<RosterEntry>,
+    },
+    ParticipantJoined {
+        participant_id: u64,
+        user_id: String,
+    },
+    ParticipantLeft {
+        participant_id: u64,
     },
     Error {
         code: u16,
@@ -81,10 +100,30 @@ impl ControlMessage {
             Self::Welcome {
                 participant_id,
                 max_datagram,
+                roster,
             } => {
                 body.put_u16(TYPE_WELCOME);
                 body.put_u64(*participant_id);
                 body.put_u16(*max_datagram);
+                body.put_u16(roster.len() as u16);
+                for entry in roster {
+                    body.put_u64(entry.participant_id);
+                    body.put_u16(entry.user_id.len() as u16);
+                    body.extend_from_slice(entry.user_id.as_bytes());
+                }
+            }
+            Self::ParticipantJoined {
+                participant_id,
+                user_id,
+            } => {
+                body.put_u16(TYPE_PARTICIPANT_JOINED);
+                body.put_u64(*participant_id);
+                body.put_u16(user_id.len() as u16);
+                body.extend_from_slice(user_id.as_bytes());
+            }
+            Self::ParticipantLeft { participant_id } => {
+                body.put_u16(TYPE_PARTICIPANT_LEFT);
+                body.put_u64(*participant_id);
             }
             Self::Error { code, message } => {
                 body.put_u16(TYPE_ERROR);
@@ -121,14 +160,70 @@ impl ControlMessage {
             }
             TYPE_JOIN_ROOM => Ok(Self::JoinRoom),
             TYPE_WELCOME => {
-                if rest.len() < 10 {
+                if rest.len() < 12 {
                     return Err(ControlError::BadBody(TYPE_WELCOME));
                 }
                 let mut pid = [0u8; 8];
                 pid.copy_from_slice(&rest[..8]);
+                let participant_id = u64::from_be_bytes(pid);
+                let max_datagram = u16::from_be_bytes([rest[8], rest[9]]);
+                let count = u16::from_be_bytes([rest[10], rest[11]]) as usize;
+                let mut cursor = &rest[12..];
+                let mut roster = Vec::with_capacity(count);
+                for _ in 0..count {
+                    if cursor.len() < 10 {
+                        return Err(ControlError::BadBody(TYPE_WELCOME));
+                    }
+                    let mut pid = [0u8; 8];
+                    pid.copy_from_slice(&cursor[..8]);
+                    let participant_id = u64::from_be_bytes(pid);
+                    let uid_len = u16::from_be_bytes([cursor[8], cursor[9]]) as usize;
+                    cursor = &cursor[10..];
+                    if cursor.len() < uid_len {
+                        return Err(ControlError::BadBody(TYPE_WELCOME));
+                    }
+                    let user_id = std::str::from_utf8(&cursor[..uid_len])
+                        .map_err(|_| ControlError::BadBody(TYPE_WELCOME))?
+                        .to_owned();
+                    cursor = &cursor[uid_len..];
+                    roster.push(RosterEntry {
+                        participant_id,
+                        user_id,
+                    });
+                }
                 Ok(Self::Welcome {
+                    participant_id,
+                    max_datagram,
+                    roster,
+                })
+            }
+            TYPE_PARTICIPANT_JOINED => {
+                if rest.len() < 10 {
+                    return Err(ControlError::BadBody(TYPE_PARTICIPANT_JOINED));
+                }
+                let mut pid = [0u8; 8];
+                pid.copy_from_slice(&rest[..8]);
+                let participant_id = u64::from_be_bytes(pid);
+                let uid_len = u16::from_be_bytes([rest[8], rest[9]]) as usize;
+                if rest.len() < 10 + uid_len {
+                    return Err(ControlError::BadBody(TYPE_PARTICIPANT_JOINED));
+                }
+                let user_id = std::str::from_utf8(&rest[10..10 + uid_len])
+                    .map_err(|_| ControlError::BadBody(TYPE_PARTICIPANT_JOINED))?
+                    .to_owned();
+                Ok(Self::ParticipantJoined {
+                    participant_id,
+                    user_id,
+                })
+            }
+            TYPE_PARTICIPANT_LEFT => {
+                if rest.len() < 8 {
+                    return Err(ControlError::BadBody(TYPE_PARTICIPANT_LEFT));
+                }
+                let mut pid = [0u8; 8];
+                pid.copy_from_slice(&rest[..8]);
+                Ok(Self::ParticipantLeft {
                     participant_id: u64::from_be_bytes(pid),
-                    max_datagram: u16::from_be_bytes([rest[8], rest[9]]),
                 })
             }
             TYPE_ERROR => {
@@ -170,13 +265,36 @@ mod tests {
     }
 
     #[test]
-    fn welcome_roundtrip() {
+    fn welcome_roundtrip_with_roster() {
         let msg = ControlMessage::Welcome {
             participant_id: 0xDEAD_BEEF,
             max_datagram: 1200,
+            roster: vec![
+                RosterEntry {
+                    participant_id: 1,
+                    user_id: "alice".into(),
+                },
+                RosterEntry {
+                    participant_id: 2,
+                    user_id: "bob".into(),
+                },
+            ],
         };
         let frame = msg.encode();
         assert_eq!(ControlMessage::decode_body(&frame[4..]).unwrap(), msg);
+    }
+
+    #[test]
+    fn participant_joined_left_roundtrip() {
+        let joined = ControlMessage::ParticipantJoined {
+            participant_id: 9,
+            user_id: "carol".into(),
+        };
+        let frame = joined.encode();
+        assert_eq!(ControlMessage::decode_body(&frame[4..]).unwrap(), joined);
+        let left = ControlMessage::ParticipantLeft { participant_id: 9 };
+        let frame = left.encode();
+        assert_eq!(ControlMessage::decode_body(&frame[4..]).unwrap(), left);
     }
 
     #[test]

@@ -20,6 +20,7 @@ rcgen = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+dashmap = { workspace = true }
 rvp-proto = { path = "../rvp-proto" }
 rvp-auth = { path = "../rvp-auth" }
 

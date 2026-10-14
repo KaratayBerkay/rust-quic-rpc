@@ -1,15 +1,16 @@
-//! P2 integration: JWT handshake + DATAGRAM loopback.
+//! P3 integration: rooms + SFU fanout between multiple clients.
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use quinn::Endpoint;
-use rvp_proto::control::{ControlMessage, PROTOCOL_VERSION};
-use rvp_proto::{MediaDatagram, MediaHeader, HEADER_LEN};
+use rvp_proto::control::{ControlMessage, RosterEntry, PROTOCOL_VERSION};
+use rvp_proto::{MediaDatagram, MediaHeader};
 use rvp_server::test_utils::insecure_client_config;
-use rvp_server::{server_config_self_signed, start_server, DEFAULT_MAX_DATAGRAM};
+use rvp_server::{server_config_self_signed, start_server};
 
 #[derive(serde::Serialize)]
 struct TestClaims {
@@ -55,21 +56,35 @@ fn grant(authority: &TestAuthority, user: &str, room: &str) -> String {
     encode(&Header::new(Algorithm::EdDSA), &claims, &key).unwrap()
 }
 
-async fn connect_client(server: SocketAddr) -> (quinn::Connection, Endpoint) {
+/// A connected client with its control stream kept open for events.
+struct Client {
+    conn: quinn::Connection,
+    control: quinn::RecvStream,
+}
+
+async fn connect(server: SocketAddr) -> quinn::Connection {
     let client_cfg = insecure_client_config();
     let mut endpoint = Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
     endpoint.set_default_client_config(client_cfg);
-    let conn = endpoint
+    endpoint
         .connect(server, "localhost")
         .expect("connect")
         .await
-        .expect("handshake");
-    (conn, endpoint)
+        .expect("handshake")
 }
 
-/// Client side of the P2 handshake: Hello + JoinRoom, await Welcome.
-async fn handshake(conn: &quinn::Connection, jwt: &str) -> ControlMessage {
-    let (mut send, mut recv) = conn.open_bi().await.expect("open control stream");
+async fn read_frame(recv: &mut quinn::RecvStream) -> ControlMessage {
+    let mut len_buf = [0u8; 4];
+    recv.read_exact(&mut len_buf).await.expect("frame len");
+    let len = u32::from_be_bytes(len_buf) as usize;
+    let mut body = vec![0u8; len];
+    recv.read_exact(&mut body).await.expect("frame body");
+    ControlMessage::decode_body(&body).expect("decode frame")
+}
+
+/// P3 handshake: Hello + JoinRoom → returns Welcome (control stream stays open).
+async fn join(conn: quinn::Connection, jwt: &str) -> (Client, ControlMessage) {
+    let (mut send, recv) = conn.open_bi().await.expect("open control");
     send.write_all(
         &ControlMessage::Hello {
             protocol_version: PROTOCOL_VERSION,
@@ -78,16 +93,13 @@ async fn handshake(conn: &quinn::Connection, jwt: &str) -> ControlMessage {
         .encode(),
     )
     .await
-    .expect("send hello");
+    .expect("hello");
     send.write_all(&ControlMessage::JoinRoom.encode())
         .await
-        .expect("send join");
-    let mut len_buf = [0u8; 4];
-    recv.read_exact(&mut len_buf).await.expect("welcome len");
-    let len = u32::from_be_bytes(len_buf) as usize;
-    let mut body = vec![0u8; len];
-    recv.read_exact(&mut body).await.expect("welcome body");
-    ControlMessage::decode_body(&body).expect("decode welcome")
+        .expect("join");
+    let mut control = recv;
+    let welcome = read_frame(&mut control).await;
+    (Client { conn, control }, welcome)
 }
 
 async fn start_test_server(authority: &TestAuthority) -> (rvp_server::RvpServer, SocketAddr) {
@@ -102,91 +114,151 @@ async fn start_test_server(authority: &TestAuthority) -> (rvp_server::RvpServer,
     (server, addr)
 }
 
+fn datagram(seq: u32, payload: &str) -> Bytes {
+    MediaDatagram::build(
+        MediaHeader {
+            sequence: seq,
+            ..Default::default()
+        },
+        Bytes::from(payload.to_owned()),
+    )
+}
+
+async fn recv_datagram(conn: &quinn::Connection) -> Bytes {
+    tokio::time::timeout(Duration::from_secs(5), conn.read_datagram())
+        .await
+        .expect("datagram timeout")
+        .expect("datagram recv")
+}
+
+/// No datagram should arrive within this window.
+async fn assert_no_datagram(conn: &quinn::Connection) {
+    let res = tokio::time::timeout(Duration::from_millis(300), conn.read_datagram()).await;
+    assert!(res.is_err(), "unexpected datagram received");
+}
+
 #[tokio::test]
-async fn handshake_then_datagram_echo() {
+async fn two_clients_same_room_fanout() {
     let authority = authority();
     let (server, addr) = start_test_server(&authority).await;
-    let (conn, _endpoint) = connect_client(addr).await;
 
-    let jwt = grant(&authority, "user-1", "room-a");
-    match handshake(&conn, &jwt).await {
+    let (alice, welcome_a) = join(connect(addr).await, &grant(&authority, "alice", "room-1")).await;
+    let alice_pid = match welcome_a {
         ControlMessage::Welcome {
             participant_id,
-            max_datagram,
+            roster,
+            ..
         } => {
+            assert!(roster.is_empty(), "first member sees empty roster");
+            participant_id
+        }
+        other => panic!("expected Welcome, got {other:?}"),
+    };
+    assert!(alice_pid >= 1);
+
+    let (bob, welcome_b) = join(connect(addr).await, &grant(&authority, "bob", "room-1")).await;
+    let bob_pid = match welcome_b {
+        ControlMessage::Welcome { roster, .. } => {
+            assert_eq!(roster.len(), 1, "bob sees alice in roster");
+            assert_eq!(roster[0].user_id, "alice");
+            roster[0].participant_id
+        }
+        other => panic!("expected Welcome, got {other:?}"),
+    };
+    assert_eq!(bob_pid, alice_pid);
+
+    // A → B fanout
+    alice.conn.send_datagram(datagram(1, "from-alice")).unwrap();
+    let got = recv_datagram(&bob.conn).await;
+    let parsed = MediaDatagram::parse(got).unwrap();
+    assert_eq!(parsed.header.sequence, 1);
+    assert_eq!(&parsed.payload[..], b"from-alice");
+
+    // B → A fanout
+    bob.conn.send_datagram(datagram(2, "from-bob")).unwrap();
+    let got = recv_datagram(&alice.conn).await;
+    assert_eq!(&MediaDatagram::parse(got).unwrap().payload[..], b"from-bob");
+
+    // No self-echo: the sender must not receive its own datagram back.
+    alice.conn.send_datagram(datagram(3, "selfie")).unwrap();
+    assert_no_datagram(&alice.conn).await;
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn rooms_are_isolated() {
+    let authority = authority();
+    let (server, addr) = start_test_server(&authority).await;
+
+    let (alice, _) = join(connect(addr).await, &grant(&authority, "alice", "room-a")).await;
+    let (carol, _) = join(connect(addr).await, &grant(&authority, "carol", "room-b")).await;
+
+    alice
+        .conn
+        .send_datagram(datagram(1, "room-a-only"))
+        .unwrap();
+    assert_no_datagram(&carol.conn).await;
+    assert_no_datagram(&alice.conn).await; // no self-echo either
+
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn participant_joined_and_left_events() {
+    let authority = authority();
+    let (server, addr) = start_test_server(&authority).await;
+
+    let (mut alice, _) = join(connect(addr).await, &grant(&authority, "alice", "room-2")).await;
+
+    let (bob, _) = join(connect(addr).await, &grant(&authority, "bob", "room-2")).await;
+
+    // Alice learns Bob joined.
+    let event = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut alice.control))
+        .await
+        .expect("join event timeout");
+    match event {
+        ControlMessage::ParticipantJoined {
+            participant_id,
+            user_id,
+        } => {
+            assert_eq!(user_id, "bob");
             assert!(participant_id >= 1);
-            assert_eq!(max_datagram as usize, DEFAULT_MAX_DATAGRAM);
+        }
+        other => panic!("expected ParticipantJoined, got {other:?}"),
+    }
+
+    // Bob leaves → alice gets ParticipantLeft.
+    bob.conn.close(0u32.into(), b"bye");
+    let event = tokio::time::timeout(Duration::from_secs(5), read_frame(&mut alice.control))
+        .await
+        .expect("left event timeout");
+    match event {
+        ControlMessage::ParticipantLeft { participant_id } => {
+            assert!(participant_id >= 1);
+        }
+        other => panic!("expected ParticipantLeft, got {other:?}"),
+    }
+
+    // Room still works after a departure: new joiner's roster excludes bob.
+    let (_, welcome) = join(connect(addr).await, &grant(&authority, "dave", "room-2")).await;
+    match welcome {
+        ControlMessage::Welcome { roster, .. } => {
+            assert_eq!(roster.len(), 1);
+            assert_eq!(roster[0].user_id, "alice");
         }
         other => panic!("expected Welcome, got {other:?}"),
     }
 
-    let max = conn.max_datagram_size().expect("datagram support");
-    assert!(max >= HEADER_LEN);
-
-    let payload = Bytes::from_static(b"hello-rvp-p2");
-    let raw = MediaDatagram::build(
-        MediaHeader {
-            sequence: 42,
-            ..Default::default()
-        },
-        payload.clone(),
-    );
-    conn.send_datagram(raw.clone()).expect("send datagram");
-    let echoed = tokio::time::timeout(std::time::Duration::from_secs(5), conn.read_datagram())
-        .await
-        .expect("echo timeout")
-        .expect("echo recv");
-    assert_eq!(echoed, raw);
-    assert_eq!(MediaDatagram::parse(echoed).unwrap().payload, payload);
-
     server.shutdown().await;
 }
 
 #[tokio::test]
-async fn many_datagrams_after_handshake() {
+async fn bad_grant_gets_error() {
     let authority = authority();
     let (server, addr) = start_test_server(&authority).await;
-    let (conn, _endpoint) = connect_client(addr).await;
+    let client = connect(addr).await;
 
-    let jwt = grant(&authority, "user-2", "room-b");
-    assert!(matches!(
-        handshake(&conn, &jwt).await,
-        ControlMessage::Welcome { .. }
-    ));
-
-    const N: u32 = 50;
-    for i in 0..N {
-        let raw = MediaDatagram::build(
-            MediaHeader {
-                sequence: i,
-                timestamp: i * 960,
-                ..Default::default()
-            },
-            Bytes::from(format!("frame-{i}")),
-        );
-        conn.send_datagram(raw).expect("send");
-    }
-    let mut seen = Vec::with_capacity(N as usize);
-    for _ in 0..N {
-        let d = tokio::time::timeout(std::time::Duration::from_secs(5), conn.read_datagram())
-            .await
-            .expect("recv timeout")
-            .expect("recv");
-        seen.push(MediaDatagram::parse(d).unwrap().header.sequence);
-    }
-    seen.sort_unstable();
-    assert_eq!(seen, (0..N).collect::<Vec<_>>());
-
-    server.shutdown().await;
-}
-
-#[tokio::test]
-async fn bad_grant_gets_error_and_no_datagrams() {
-    let authority = authority();
-    let (server, addr) = start_test_server(&authority).await;
-    let (conn, _endpoint) = connect_client(addr).await;
-
-    // Sign with the right shape but wrong key.
     let other = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
     let claims = TestClaims {
         sub: "intruder".to_owned(),
@@ -200,7 +272,7 @@ async fn bad_grant_gets_error_and_no_datagrams() {
     let key = EncodingKey::from_ed_pem(other.serialize_pem().as_bytes()).unwrap();
     let jwt = encode(&Header::new(Algorithm::EdDSA), &claims, &key).unwrap();
 
-    let (mut send, mut recv) = conn.open_bi().await.unwrap();
+    let (mut send, mut recv) = client.open_bi().await.unwrap();
     send.write_all(
         &ControlMessage::Hello {
             protocol_version: PROTOCOL_VERSION,
@@ -214,12 +286,7 @@ async fn bad_grant_gets_error_and_no_datagrams() {
         .await
         .unwrap();
 
-    let mut len_buf = [0u8; 4];
-    recv.read_exact(&mut len_buf).await.expect("error len");
-    let len = u32::from_be_bytes(len_buf) as usize;
-    let mut body = vec![0u8; len];
-    recv.read_exact(&mut body).await.expect("error body");
-    match ControlMessage::decode_body(&body).unwrap() {
+    match read_frame(&mut recv).await {
         ControlMessage::Error { code, .. } => {
             assert_eq!(code, rvp_proto::control::error_code::UNAUTHORIZED);
         }
@@ -228,3 +295,6 @@ async fn bad_grant_gets_error_and_no_datagrams() {
 
     server.shutdown().await;
 }
+
+#[allow(dead_code)]
+fn _roster_type_anchor(_: &RosterEntry) {}

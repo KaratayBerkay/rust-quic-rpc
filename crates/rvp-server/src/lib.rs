@@ -1,11 +1,12 @@
-//! RVP media server (Phase 2: JWT-authenticated control handshake + echo).
+//! RVP media server (Phase 3: rooms + SFU fanout).
 //!
 //! Per connection (plan §3.4):
 //! 1. TLS 1.3 (quinn/rustls, ALPN `rvp/1`)
 //! 2. Client opens the control bi-stream and sends `Hello { version, grant_jwt }`
 //! 3. Server verifies the EdDSA grant **offline** (`rvp-auth`), rate-limit hook slot
-//! 4. `JoinRoom` → capacity check (P3) → `Welcome { participant_id, max_datagram }`
-//! 5. Only after `Welcome` are DATAGRAMs read from the connection
+//! 4. `JoinRoom` → capacity check → `Welcome { participant_id, roster, ... }`
+//! 5. Only after `Welcome` are DATAGRAMs read — and then they are fanned out
+//!    to every *other* connection in the room (opaque bytes; no crypto here)
 
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,12 +15,17 @@ use std::time::Duration;
 
 use quinn::{Endpoint, ServerConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rvp_auth::{AuthError, Verifier};
+use rvp_auth::Verifier;
 use rvp_proto::control::{
     error_code, ControlError, ControlMessage, MAX_FRAME_LEN, PROTOCOL_VERSION,
 };
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
+
+pub mod rooms;
+pub use rooms::{RoomError, RoomRegistry, MAX_ROOM_PARTICIPANTS};
+
+use rooms::Room;
 
 pub const DEFAULT_MAX_DATAGRAM: usize = 1200;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -106,28 +112,52 @@ fn transport_config() -> quinn::TransportConfig {
     t
 }
 
+/// Shared per-server state (rooms + grant verifier).
+pub struct ServerState {
+    pub registry: RoomRegistry,
+    verifier: Arc<Verifier>,
+}
+
+impl ServerState {
+    pub fn new(verifier: Arc<Verifier>) -> Self {
+        Self {
+            registry: RoomRegistry::new(),
+            verifier,
+        }
+    }
+}
+
 /// Start the media server on `addr` (use port 0 for ephemeral).
 pub async fn start_server(
     addr: SocketAddr,
     server_config: ServerConfig,
     verifier: Arc<Verifier>,
 ) -> Result<RvpServer, ServerError> {
+    start_server_with_state(addr, server_config, Arc::new(ServerState::new(verifier))).await
+}
+
+/// Start with explicit shared state (multi-endpoint deployments, tests).
+pub async fn start_server_with_state(
+    addr: SocketAddr,
+    server_config: ServerConfig,
+    state: Arc<ServerState>,
+) -> Result<RvpServer, ServerError> {
     let endpoint = Endpoint::server(server_config, addr)?;
     let local_addr = endpoint.local_addr()?;
     info!(%local_addr, "rvp server listening (quic, alpn=rvp/1)");
-    let task = tokio::spawn(accept_loop(endpoint, verifier));
+    let task = tokio::spawn(accept_loop(endpoint, state));
     Ok(RvpServer { local_addr, task })
 }
 
-async fn accept_loop(endpoint: Endpoint, verifier: Arc<Verifier>) -> Result<(), ServerError> {
+async fn accept_loop(endpoint: Endpoint, state: Arc<ServerState>) -> Result<(), ServerError> {
     while let Some(connecting) = endpoint.accept().await {
-        let verifier = verifier.clone();
+        let state = state.clone();
         tokio::spawn(async move {
             match connecting.await {
                 Ok(conn) => {
                     let remote = conn.remote_address();
                     info!(%remote, "connection established");
-                    if let Err(e) = handle_connection(conn, verifier).await {
+                    if let Err(e) = handle_connection(conn, state).await {
                         warn!(%remote, error = %e, "connection closed with error");
                     }
                 }
@@ -140,7 +170,7 @@ async fn accept_loop(endpoint: Endpoint, verifier: Arc<Verifier>) -> Result<(), 
 
 async fn handle_connection(
     conn: quinn::Connection,
-    verifier: Arc<Verifier>,
+    state: Arc<ServerState>,
 ) -> Result<(), ServerError> {
     let (mut send, mut recv) = conn
         .accept_bi()
@@ -162,15 +192,11 @@ async fn handle_connection(
                 .await;
                 return Ok(());
             }
-            match verifier.verify(&grant_jwt) {
+            match state.verifier.verify(&grant_jwt) {
                 Ok(claims) => claims,
                 Err(e) => {
                     warn!(error = %e, "grant rejected");
-                    let code = match e {
-                        AuthError::Expired => error_code::UNAUTHORIZED,
-                        _ => error_code::UNAUTHORIZED,
-                    };
-                    send_error(&mut send, code, &e.to_string()).await;
+                    send_error(&mut send, error_code::UNAUTHORIZED, &e.to_string()).await;
                     return Ok(());
                 }
             }
@@ -209,15 +235,40 @@ async fn handle_connection(
     }
 
     let participant_id = PARTICIPANT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let control = Arc::new(tokio::sync::Mutex::new(send));
+    let (room, roster) = match state.registry.join(
+        &claims.room_id,
+        participant_id,
+        &claims.user_id,
+        conn.clone(),
+        control.clone(),
+    ) {
+        Ok(joined) => joined,
+        Err(RoomError::Full) => {
+            let mut guard = control.lock().await;
+            send_error(
+                &mut guard,
+                error_code::ROOM_FULL,
+                &format!("room capacity {}", MAX_ROOM_PARTICIPANTS),
+            )
+            .await;
+            return Ok(());
+        }
+    };
+
+    // Welcome keeps the control stream OPEN for server-push events.
     let welcome = ControlMessage::Welcome {
         participant_id,
         max_datagram: DEFAULT_MAX_DATAGRAM as u16,
+        roster,
     };
-    send.write_all(&welcome.encode())
-        .await
-        .map_err(|e| ServerError::Connection(format!("welcome: {e}")))?;
-    send.finish()
-        .map_err(|e| ServerError::Connection(format!("finish: {e}")))?;
+    {
+        let mut guard = control.lock().await;
+        guard
+            .write_all(&welcome.encode())
+            .await
+            .map_err(|e| ServerError::Connection(format!("welcome: {e}")))?;
+    }
     info!(
         %participant_id,
         user = %claims.user_id,
@@ -226,19 +277,64 @@ async fn handle_connection(
         "joined room (datagrams now accepted)"
     );
 
-    // --- P2 media path: echo (P3 replaces with room fanout) ---
-    echo_datagrams(conn).await
+    // Tell the rest of the room.
+    broadcast_event(
+        &room,
+        participant_id,
+        ControlMessage::ParticipantJoined {
+            participant_id,
+            user_id: claims.user_id.clone(),
+        },
+    )
+    .await;
+
+    // --- P3 media path: SFU fanout to everyone else in the room ---
+    let result = fanout_loop(&conn, &room, participant_id).await;
+
+    // --- Teardown: remove from room, notify peers, GC empty rooms ---
+    if let Some(room) = state.registry.leave(&claims.room_id, participant_id) {
+        broadcast_event(
+            &room,
+            participant_id,
+            ControlMessage::ParticipantLeft { participant_id },
+        )
+        .await;
+        debug!(%participant_id, "participant left");
+    }
+    result
 }
 
-/// P2 hot path: echo every datagram back verbatim (`Bytes` refcount, no copy).
-async fn echo_datagrams(conn: quinn::Connection) -> Result<(), ServerError> {
+/// Hot path: read datagram → fanout `Bytes` clones to every other member.
+async fn fanout_loop(
+    conn: &quinn::Connection,
+    room: &Arc<Room>,
+    from: u64,
+) -> Result<(), ServerError> {
     while let Ok(dgram) = conn.read_datagram().await {
-        debug!(len = dgram.len(), "echo datagram");
-        if conn.send_datagram(dgram).is_err() {
-            break;
+        let targets = room.fanout_targets(from);
+        debug!(len = dgram.len(), peers = targets.len(), "fanout datagram");
+        for peer in targets {
+            // Quinn drops oldest on overflow — correct for live audio (plan §4).
+            let _ = peer.send_datagram(dgram.clone());
         }
     }
     Ok(())
+}
+
+/// Broadcast a control event to every member except `except`.
+/// Locks are taken per-peer and never held across room locks.
+async fn broadcast_event(room: &Arc<Room>, except: u64, msg: ControlMessage) {
+    let targets = room.event_targets(except);
+    let frame = msg.encode();
+    for (_pid, control) in targets {
+        let control = control.clone();
+        let frame = frame.clone();
+        let send = tokio::spawn(async move {
+            let mut guard = control.lock().await;
+            let _ = timeout(Duration::from_secs(2), guard.write_all(&frame)).await;
+        });
+        let _ = send.await;
+    }
 }
 
 /// Read one length-prefixed control frame (u32 BE length + body).

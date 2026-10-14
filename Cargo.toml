@@ -28,6 +28,7 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "rust_crypto"] }
 aes-gcm = "0.10"
+dashmap = "6"
 
 [profile.release]
 lto = "thin"
