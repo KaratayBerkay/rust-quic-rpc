@@ -1,0 +1,19 @@
+[package]
+name = "rvp-cli"
+description = "RVP server binary: config load, run media server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "rvp-server"
+path = "src/main.rs"
+
+[dependencies]
+rvp-server = { path = "../rvp-server" }
+clap = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

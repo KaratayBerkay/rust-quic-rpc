@@ -1,0 +1,29 @@
+[package]
+name = "rvp-server"
+description = "RVP media server: QUIC endpoint, rooms, SFU forwarder (P1: datagram echo)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# TEST ONLY: skip server-cert verification for loopback tests/demo.
+test-utils = []
+
+[dependencies]
+bytes = { workspace = true }
+quinn = { workspace = true }
+rustls = { workspace = true }
+rcgen = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+rvp-proto = { path = "../rvp-proto" }
+
+[[test]]
+name = "loopback"
+required-features = ["test-utils"]
