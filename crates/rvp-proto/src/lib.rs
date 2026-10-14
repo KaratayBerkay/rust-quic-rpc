@@ -21,6 +21,8 @@
 
 use bytes::{Bytes, BytesMut};
 
+pub mod control;
+
 /// Fixed media-header length in bytes.
 pub const HEADER_LEN: usize = 16;
 

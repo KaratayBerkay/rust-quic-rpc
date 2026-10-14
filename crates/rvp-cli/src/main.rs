@@ -1,6 +1,8 @@
-//! `rvp-server` binary — Phase 1: run the QUIC datagram echo server.
+//! `rvp-server` binary — Phase 2: JWT-authenticated QUIC media server.
 
 use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::Parser;
 use tracing::info;
@@ -9,12 +11,15 @@ use tracing::info;
 #[command(
     name = "rvp-server",
     version,
-    about = "RVP QUIC media server (P1: echo)"
+    about = "RVP QUIC media server (P2: JWT handshake + echo)"
 )]
 struct Args {
     /// UDP listen address.
     #[arg(long, default_value = "127.0.0.1:4433")]
     listen: SocketAddr,
+    /// NestJS Ed25519 media-grant public key (PEM, SPKI).
+    #[arg(long)]
+    jwt_public_key: PathBuf,
 }
 
 #[tokio::main]
@@ -27,7 +32,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let args = Args::parse();
-    let server = rvp_server::start_echo_server(args.listen).await?;
+    let pem = std::fs::read(&args.jwt_public_key)?;
+    let verifier = Arc::new(rvp_auth::Verifier::from_public_pem(&pem)?);
+
+    let server = rvp_server::start_server(
+        args.listen,
+        rvp_server::server_config_self_signed()?,
+        verifier,
+    )
+    .await?;
     info!(addr = %server.local_addr(), "rvp-server up — press ctrl-c to stop");
     tokio::signal::ctrl_c().await?;
     info!("shutting down");

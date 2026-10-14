@@ -1,11 +1,17 @@
 [workspace]
 resolver = "2"
-members = ["crates/rvp-proto", "crates/rvp-server", "crates/rvp-cli"]
+members = [
+    "crates/rvp-proto",
+    "crates/rvp-auth",
+    "crates/rvp-crypto",
+    "crates/rvp-server",
+    "crates/rvp-cli",
+]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
+license-file = "LICENSE"
 rust-version = "1.85"
 repository = "https://github.com/KaratayBerkay/rust-quic-rpc"
 
@@ -19,6 +25,9 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "rust_crypto"] }
+aes-gcm = "0.10"
 
 [profile.release]
 lto = "thin"

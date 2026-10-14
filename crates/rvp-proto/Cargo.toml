@@ -3,7 +3,7 @@ name = "rvp-proto"
 description = "RVP/1 wire format: media datagram header + control frame codecs"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
 rust-version.workspace = true
 repository.workspace = true
 
