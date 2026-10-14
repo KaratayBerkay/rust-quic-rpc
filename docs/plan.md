@@ -358,3 +358,39 @@ Repo: `https://github.com/KaratayBerkay/rust-quic-rpc` · Branch: `main` · Hook
 - **PR gate:** CI green (docs lint + commitlint now; per-phase jobs activate when code lands: `crates/**` → Rust fmt/clippy/test, `apps/flutter` → analyze/test, `apps/web` → lint/build, `services/nest` → lint/test/build), human review, squash-merge with conventional title.
 - **Husky (local):** `pre-commit` = markdownlint on docs; `commit-msg` = commitlint (`config-conventional`). Bypass only via explicit `--no-verify` with review note.
 - **Commit/PR title convention:** `type(scope): summary` — scopes: `docs`, `proto`, `auth`, `server`, `flutter`, `web`, `nest`, `ci`.
+
+### 13.1 GitHub/CI agency skills ([agency-agents](https://github.com/msitarzewski/agency-agents))
+
+Curated roster for the delivery pipeline (`.github/workflows/ci.yml`, PR gates, releases). Installed under `.opencode/agents/`.
+
+**Core — CI/GitHub (installed):**
+
+- `devops-automator` — owns GitHub Actions workflows (docs lint, fmt/clippy/test, phase gates)
+- `git-workflow-master` — conventional commits, `phase/P<N>` branch strategy, history hygiene
+- `code-reviewer` — PR review gates and merge criteria
+- `test-automation-engineer` — deterministic CI jobs, flake elimination, parallelization
+- `test-results-analyzer` — cargo/clippy/job-log signals into actionable output
+- `reality-checker` — evidence-based release certification before production
+- `senior-secops` — per-PR secret scanning, secure-by-default checks
+- `application-security-engineer` — SAST/DAST (CodeQL-class) jobs as code lands
+- `platform-engineer` — monorepo golden paths so every crate/app follows one paved road
+- `sre-site-reliability-engineer` — SLOs/observability for the media server (P7+)
+
+**Supporting (installed, adjacent duties):**
+
+- `performance-benchmarker` — P7 LiveKit A/B regression gates
+- `rust-refactoring-specialist` — behavior-safe refactors under green CI
+- `api-tester` — NestJS/QUIC endpoint integration jobs (P5+)
+- `technical-writer` — docs quality behind the docs-lint job
+
+**Not installed — activate if needed:**
+
+- `minimal-change-engineer` — keep phase PRs scoped, no creep
+- `developer-tooling-engineer` — local↔CI parity scripts
+- `mobile-release-engineer` — Flutter signing/staged rollout (P4+)
+- `secrets-credential-engineer` — Actions secrets/token hygiene
+- `finops-engineer` — runner/matrix cost control
+
+Install subset: `./scripts/install.sh --tool opencode --agent <slug>,...`
+
+Note: the roster has no GitHub-Actions/Docker/SBOM specialist — those duties are covered by `devops-automator` + `application-security-engineer`.
