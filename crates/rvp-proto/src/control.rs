@@ -241,7 +241,7 @@ impl ControlMessage {
                 })
             }
             TYPE_KEY_UPDATE => {
-                if rest.len() < 1 {
+                if rest.is_empty() {
                     return Err(ControlError::BadBody(TYPE_KEY_UPDATE));
                 }
                 Ok(Self::KeyUpdate { kid: rest[0] })
