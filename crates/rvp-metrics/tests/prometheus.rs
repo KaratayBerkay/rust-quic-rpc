@@ -22,6 +22,12 @@ async fn p7a_metrics_render_and_serve() {
     rvp_metrics::instrument::room_full();
     rvp_metrics::instrument::connection_opened("quic");
     rvp_metrics::instrument::connection_closed("quic");
+    rvp_metrics::instrument::datagram_dropped("oversized");
+    rvp_metrics::instrument::datagram_dropped("rate_pps");
+    rvp_metrics::instrument::datagram_dropped("rate_bps");
+    rvp_metrics::instrument::connection_rejected("ip_cap");
+    rvp_metrics::instrument::connection_rejected("user_cap");
+    rvp_metrics::instrument::retry_sent();
 
     let text = server.render();
     for needle in [
@@ -40,6 +46,9 @@ async fn p7a_metrics_render_and_serve() {
         "rvp_room_full_total",
         "rvp_connections_total",
         "rvp_connections",
+        "rvp_datagrams_dropped_total",
+        "rvp_connections_rejected_total",
+        "rvp_quic_retries_total",
     ] {
         assert!(
             text.contains(needle),
