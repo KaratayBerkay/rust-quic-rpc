@@ -23,10 +23,12 @@ use rvp_proto::control::{
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
+pub mod limits;
 pub mod rooms;
 pub mod transport;
 pub mod wt;
 
+pub use limits::{ConnGuard, ConnLimiter, IngressLimiter, Limits};
 pub use rooms::{RoomError, RoomRegistry, MAX_ROOM_PARTICIPANTS};
 
 use rooms::Room;
@@ -125,13 +127,25 @@ fn transport_config() -> quinn::TransportConfig {
 pub struct ServerState {
     pub registry: RoomRegistry,
     pub(crate) verifier: Arc<Verifier>,
+    /// P7b admission-control tunables (shared by both endpoints).
+    pub limits: Limits,
+    /// P7b per-IP/per-user connection counters (shared by both endpoints).
+    pub conns: Arc<ConnLimiter>,
 }
 
 impl ServerState {
     pub fn new(verifier: Arc<Verifier>) -> Self {
+        Self::with_limits(verifier, Limits::default())
+    }
+
+    /// Build with explicit hardening limits (tests, deployments).
+    pub fn with_limits(verifier: Arc<Verifier>, limits: Limits) -> Self {
+        let conns = ConnLimiter::new(&limits);
         Self {
             registry: RoomRegistry::new(),
             verifier,
+            limits,
+            conns,
         }
     }
 }
@@ -159,11 +173,40 @@ pub async fn start_server_with_state(
 }
 
 async fn accept_loop(endpoint: Endpoint, state: Arc<ServerState>) -> Result<(), ServerError> {
-    while let Some(connecting) = endpoint.accept().await {
+    while let Some(incoming) = endpoint.accept().await {
         let state = state.clone();
+
+        // P7b: validate the source address statelessly BEFORE any state is
+        // allocated — a spoofed-source flood can only earn Retry packets.
+        let incoming = if state.limits.enable_retry && !incoming.remote_address_validated() {
+            match incoming.retry() {
+                Ok(()) => {
+                    instrument::retry_sent();
+                    continue;
+                }
+                Err(e) => {
+                    // Unreachable: !remote_address_validated() ⇒ may_retry().
+                    // Recover the incoming so the connection can still proceed.
+                    warn!(error = %e, "retry refused; accepting peer as-is");
+                    e.into_incoming()
+                }
+            }
+        } else {
+            incoming
+        };
+
+        // P7b: per-source-IP cap (connection task holds the slot to completion).
+        let ip = incoming.remote_address().ip();
+        let Some(slot) = Arc::clone(&state.conns).try_acquire_ip(ip) else {
+            instrument::connection_rejected("ip_cap");
+            incoming.refuse();
+            continue;
+        };
+
         tokio::spawn(async move {
+            let _slot = slot;
             instrument::connection_opened("quic");
-            match connecting.await {
+            match incoming.await {
                 Ok(conn) => {
                     let remote = conn.remote_address();
                     info!(%remote, "connection established");
@@ -287,6 +330,28 @@ pub(crate) async fn serve_joined(
     tx: Arc<dyn ParticipantTx>,
     datagrams: &mut dyn DatagramSource,
 ) -> Result<(), ServerError> {
+    // P7b: per-user session cap (grant verified; slot held until we return).
+    let _user_slot = match Arc::clone(&state.conns).try_acquire_user(&claims.user_id) {
+        Some(slot) => slot,
+        None => {
+            instrument::connection_rejected("user_cap");
+            tx.send_control(
+                ControlMessage::Error {
+                    code: error_code::CONNECTION_LIMIT,
+                    message: format!(
+                        "per-user connection limit {}",
+                        state.limits.max_conn_per_user
+                    ),
+                }
+                .encode(),
+            )
+            .await;
+            // Deliver the frame before this task drops the connection.
+            tx.finish_control().await;
+            return Ok(());
+        }
+    };
+
     let participant_id = PARTICIPANT_COUNTER.fetch_add(1, Ordering::Relaxed);
     let (room, roster) = match state.registry.join(
         &claims.room_id,
@@ -305,6 +370,8 @@ pub(crate) async fn serve_joined(
                 .encode(),
             )
             .await;
+            // Deliver the frame before this task drops the connection.
+            tx.finish_control().await;
             return Ok(());
         }
     };
@@ -312,7 +379,7 @@ pub(crate) async fn serve_joined(
     // Welcome keeps the control stream OPEN for server-push events.
     let welcome = ControlMessage::Welcome {
         participant_id,
-        max_datagram: DEFAULT_MAX_DATAGRAM as u16,
+        max_datagram: state.limits.max_datagram as u16,
         roster,
     };
     tx.send_control(welcome.encode()).await;
@@ -334,7 +401,8 @@ pub(crate) async fn serve_joined(
     )
     .await;
 
-    let result = fanout_loop(datagrams, &room, participant_id).await;
+    let mut limiter = IngressLimiter::new(&state.limits);
+    let result = fanout_loop(datagrams, &room, participant_id, &mut limiter).await;
 
     if let Some(room) = state.registry.leave(&claims.room_id, participant_id) {
         broadcast_event(
@@ -348,13 +416,19 @@ pub(crate) async fn serve_joined(
     result
 }
 
-/// Hot path: read datagram → fanout `Bytes` clones to every other member.
+/// Hot path: admit (size/rate caps) → read datagram → fanout `Bytes` clones to
+/// every other member.
 async fn fanout_loop(
     datagrams: &mut dyn DatagramSource,
     room: &Arc<Room>,
     from: u64,
+    limiter: &mut IngressLimiter,
 ) -> Result<(), ServerError> {
     while let Some(dgram) = datagrams.recv_datagram().await {
+        if let Err(reason) = limiter.admit(Instant::now(), dgram.len()) {
+            instrument::datagram_dropped(reason);
+            continue;
+        }
         let targets = room.fanout_targets(from);
         debug!(len = dgram.len(), peers = targets.len(), "fanout datagram");
         instrument::fanout_datagram(dgram.len(), targets.len());
@@ -427,6 +501,10 @@ pub mod test_utils {
         let mut t = quinn::TransportConfig::default();
         t.datagram_receive_buffer_size(Some(1024 * 1024));
         t.datagram_send_buffer_size(1024 * 1024);
+        // Raise the send MTU and freeze discovery so tests can emit a
+        // datagram above the server's DEFAULT_MAX_DATAGRAM cap (P7b).
+        t.initial_mtu(1450);
+        t.mtu_discovery_config(None);
         let mut cfg = ClientConfig::new(Arc::new(
             quinn::crypto::rustls::QuicClientConfig::try_from(tls).expect("quic client config"),
         ));

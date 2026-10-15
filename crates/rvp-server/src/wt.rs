@@ -91,7 +91,25 @@ async fn accept_loop(
     loop {
         let incoming = endpoint.accept().await;
         let state = state.clone();
+
+        // P7b: stateless address validation before any state is allocated
+        // (mirrors the quinn accept loop; `retry` panics only if validated).
+        if state.limits.enable_retry && !incoming.remote_address_validated() {
+            incoming.retry();
+            instrument::retry_sent();
+            continue;
+        }
+
+        // P7b: per-source-IP cap (task holds the slot to completion).
+        let ip = incoming.remote_address().ip();
+        let Some(slot) = Arc::clone(&state.conns).try_acquire_ip(ip) else {
+            instrument::connection_rejected("ip_cap");
+            incoming.refuse();
+            continue;
+        };
+
         tokio::spawn(async move {
+            let _slot = slot;
             instrument::connection_opened("webtransport");
             match incoming.await {
                 Ok(session_request) => {
