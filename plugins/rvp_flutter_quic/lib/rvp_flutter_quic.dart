@@ -6,8 +6,13 @@
 /// - [RvpSession] — connect + handshake + typed streams
 library;
 
+export 'src/audio/jitter_buffer.dart';
+export 'src/audio/media_header.dart';
+export 'src/audio/opus.dart';
+export 'src/audio/voice_pipeline.dart';
 export 'src/control_codec.dart';
 export 'src/init.dart';
 export 'src/session.dart';
+export 'src/rust/api/crypto.dart';
 export 'src/rust/api/transport.dart';
 export 'src/rust/frb_generated.dart' show RustLib;

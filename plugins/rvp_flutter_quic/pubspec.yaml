@@ -8,6 +8,9 @@ environment:
 dependencies:
   flutter_rust_bridge: 2.13.0
   flutter_rust_bridge_hooks: 2.13.0
+  # Opus (plan Q2: PCM + opus_codec_dart); opus_codec loads the native lib.
+  opus_codec: ^3.0.5
+  opus_codec_dart: ^3.0.5
 
 dev_dependencies:
   flutter_lints: ^6.0.0
