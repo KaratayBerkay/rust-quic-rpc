@@ -151,6 +151,24 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.nest == 'true'
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: rvp
+          POSTGRES_PASSWORD: rvp
+          POSTGRES_DB: rvp
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgres://rvp:rvp@127.0.0.1:5432/rvp
+      # Deterministic dev seed so the JWKS interop fixture stays stable.
+      NEST_EDDSA_SEED: "0000000000000000000000000000000000000000000000000000000000000000"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
