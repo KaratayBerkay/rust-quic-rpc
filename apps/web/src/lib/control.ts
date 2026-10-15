@@ -25,6 +25,7 @@ export const ErrorCode = {
   TIMEOUT: 408,
   ROOM_FULL: 429,
   INTERNAL: 500,
+  CONNECTION_LIMIT: 503,
   VERSION_UNSUPPORTED: 505,
 } as const;
 

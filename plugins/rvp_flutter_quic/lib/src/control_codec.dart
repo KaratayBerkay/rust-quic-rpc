@@ -29,6 +29,7 @@ abstract final class ControlErrorCode {
   static const int timeout = 408;
   static const int roomFull = 429;
   static const int internal = 500;
+  static const int connectionLimit = 503;
   static const int versionUnsupported = 505;
 }
 
