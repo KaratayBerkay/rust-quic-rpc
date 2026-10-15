@@ -110,7 +110,7 @@ crates/
   rvp-cli/       # binary: config load, run server
   rvp-loadgen/   # Phase 6 load tool (pure-Rust quinn client)
 apps/
-  web/           # TanStack (React) phone-call web client (P6)
+  web/           # Vite SPA web client (TanStack Router/Query; P6a shell, P6b audio)
   flutter/       # Flutter mobile client app (P4b+)
 plugins/
   rvp_flutter_quic/  # in-house QUIC plugin, flutter_rust_bridge over quinn (P4a)
@@ -184,17 +184,17 @@ Second real client: a browser **phone-call app** (login, room list, roster, mute
 
 **Stack (TanStack family):**
 
-- **TanStack Start** (or Vite SPA — open decision 9) + React + TypeScript
+- **Vite SPA** (resolved decision 9) + React + TypeScript — call app is client-heavy; no SSR needed
 - **TanStack Router** — type-safe routes: `/login`, `/rooms`, `/rooms/:id` (in-call)
 - **TanStack Query** — all NestJS REST (login, rooms, grants, pairwise keys) with retry/reconnect policy
 - UI kit in the Radix/shadcn style — owned by the UI Designer agent (§7.1)
 
 **Media path (browser):**
 
-- **WebTransport over HTTP/3** — the browser's QUIC: unreliable DATAGRAMs carry RVP media; one bidirectional stream carries the RVP control protocol. Framing mirrors `rvp-proto` (TS port, or WASM bindings later).
-- **Server change:** `rvp-server` exposes a WebTransport (HTTP/3) endpoint **alongside** the raw-QUIC endpoint (`wtransport` or quinn + h3) — same room registry, same JWT checks, same fanout, same datagram forward path.
-- **Opus via WebCodecs** (`AudioEncoder`/`AudioDecoder`) — 20 ms frames; **AudioWorklet** captures/plays 48 kHz mono PCM.
-- **Pairwise crypto via WebCrypto** AES-GCM — same NestJS-delivered per-pair keys and `kid` rotation as Flutter (ADR-004). Pairwise cost applies too: N−1 datagrams per 20 ms frame per publisher.
+- **WebTransport over HTTP/3** — the browser's QUIC: unreliable DATAGRAMs carry RVP media; one bidirectional stream carries the RVP control protocol. Framing mirrors `rvp-proto` (TS port in `apps/web/src/lib/control.ts`, hex vectors pinned against Rust).
+- **Server change (shipped P6a):** `rvp-server` exposes a WebTransport (HTTP/3) endpoint **alongside** the raw-QUIC endpoint (`wtransport`) — same room registry, same JWT checks, same fanout, same datagram forward path (`crates/rvp-server/src/wt.rs`, transport-agnostic `ParticipantTx` trait). `rvp-cli --wt-listen <addr>` enables it; cert SHA-256 is logged for browser `serverCertificateHashes`.
+- **Opus via WebCodecs** (`AudioEncoder`/`AudioDecoder`) — 20 ms frames; **AudioWorklet** captures/plays 48 kHz mono PCM. *(P6b)*
+- **Pairwise crypto via WebCrypto** AES-GCM — same NestJS-delivered per-pair keys and `kid` rotation as Flutter (ADR-004). Pairwise cost applies too: N−1 datagrams per 20 ms frame per publisher. *(P6b)*
 - **Fallback (open decision 8):** WebSocket + same RVP frames if WebTransport is unavailable — degraded (no QUIC CC), not v1-blocking.
 
 ```text
@@ -284,7 +284,7 @@ Deliverables (docs + decisions, no production code):
 3. **P3** Rooms + SFU forward (two+ Rust clients talking; server forwards ciphertext opaquely)
 4. **P4** In-house Flutter plugin (`rvp_flutter_quic`) → capture/Opus/crypto/jitter/playback (no `flutter_quic` spike) — split: **P4a** plugin transport (`flutter_rust_bridge` over quinn: connect, control bi-stream, datagrams) → **P4b** audio pipeline (PCM capture → `opus_codec_dart` → pairwise crypto → jitter buffer → playback) + E2E voice demo — **P4a ✅ shipped; P4b ✅ shipped** (audio pipeline + `apps/flutter` loopback/two-device voice demo)
 5. **P5** NestJS rooms/grants wired — **✅ shipped** (`services/nest`: login/rooms/grants/JWKS on Postgres; Rust JWKS verification + rotation in `rvp-cli`)
-6. **P6** TanStack web client — WebTransport spike (HTTP/3 endpoint crate) → AudioWorklet/WebCodecs/WebCrypto pipeline + Playwright E2E
+6. **P6** Web client — split: **P6a** WebTransport/HTTP3 endpoint + web client shell (control handshake, datagram loopback, TS codec with Rust-anchored vectors) → **P6b** audio pipeline (AudioWorklet/WebCodecs/WebCrypto) + Playwright voice E2E — **P6a ✅ shipped** (`rvp-server` WT endpoint via `wtransport` sharing ServerState/registry/fanout; `apps/web` Vite SPA with login/rooms/in-call handshake, roster, datagram counters; cross-endpoint quinn↔WT fanout test)
 7. **P7** Hardening, metrics, loadgen, LiveKit comparison (includes web client)
 8. **P8** Multi-instance routing (Redis room directory)
 
@@ -309,7 +309,7 @@ Exit criteria per phase: builds green, integration test list, runnable demo comm
 6. **Phase 0 output:** markdown docs only, or also mermaid sequence diagrams?
 7. **Pairwise crypto scale limit:** at what room size (N) do we drop pairwise E2E, switch to a group key, or accept publisher uplink ×(N−1)?
 8. **Web media transport:** WebTransport/HTTP3 datagrams (recommended, real QUIC semantics) vs WebSocket binary fallback for v1?
-9. **Web app shape:** TanStack Start (SSR) vs pure Vite SPA (simpler deploy, call app is client-heavy anyway)?
+9. ~~**Web app shape:** TanStack Start (SSR) vs pure Vite SPA (simpler deploy, call app is client-heavy anyway)?~~ **Resolved (P6a):** Vite SPA — call app is client-heavy, no SSR needed, simpler static deploy.
 10. ~~**Scope freeze:** commit to audio-only v1 or schedule gap phases P9–P11 now?~~ **Resolved:** audio-only v1 (P1–P8); connectivity fallback, speaker detection, video, and recording are **in the plan as deferred post-v1 phases P9–P12** (§10) — start only after v1 ships and product asks for them.
 
 ---
