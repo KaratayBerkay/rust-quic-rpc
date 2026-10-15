@@ -136,14 +136,16 @@ plugins/
 
 ## 5. NestJS design
 
-- `POST /auth/login` → long-lived API session JWT (separate from media grant).
-- `POST /rooms`, `GET /rooms/:id`, membership tables in Postgres.
+**Status (P5, shipped):** `services/nest` implements this section against Postgres 16 (`docker-compose.yml` locally, `postgres:16` CI service). `POST /auth/login`, `POST /rooms`, `GET /rooms/:id`, `POST /rooms/:id/members`, `POST /rooms/:id/grants`, `GET /auth/jwks` are live; pairwise AES-128 keys (dense per-room `kid` 1..255) are delivered in the grant response to both members. Rust consumes the JWKS via `rvp-cli --nest-jwks <url>` (boot fetch + 5-min refresh — signing-key rotation needs no media-server restart); `rvp-auth::Verifier::from_jwks` is pinned to a live Nest fixture. The Flutter demo still uses the `p4a_harness` `GET /state` stand-in — switching `apps/flutter` to Nest is deferred to P6 (web client) so the demo keeps working unchanged.
+
+- `POST /auth/login` → long-lived API session JWT (separate from media grant). ✅
+- `POST /rooms`, `GET /rooms/:id`, membership tables in Postgres. ✅
 - `POST /rooms/:id/grants` → media grant JWT:
-  - Claims: `iss=nest`, `aud=rvp`, `sub=user_id`, `room_id`, `role`, `exp ≤ 2 min`, `jti`, optional `media_node`.
-- Revocation: short TTL is primary; optional Redis `jti` denylist for force-kick (Rust checks at Join).
-- Rust gets the EdDSA public key via config file or boot-time fetch from `/auth/jwks`; support rotation.
-- **Pairwise media keys (ADR-004):** NestJS generates one AES-128 key per participant pair per room, delivers it to **both** members over the authenticated REST/session channel (never via the media server). Rotation every N minutes → new `kid`; clients announce `KeyUpdate{kid}` on their control streams. Rust never receives keys. Missing key for a peer blocks audio with that peer (not the whole `JoinRoom`).
-- **Dev stand-in until P5:** `p4a_harness` mints room grants and one pairwise key per pair (room-wide `kid` from 1) and serves both over `GET /state` on `http://127.0.0.1:7860` (override `RVP_HARNESS_HTTP`) — the Flutter demo and E2E tests consume exactly this shape; NestJS must serve the same JSON in P5.
+  - Claims: `iss=nest`, `aud=rvp`, `sub=user_id`, `room_id`, `role`, `exp ≤ 2 min`, `jti`, optional `media_node`. ✅
+- Revocation: short TTL is primary; optional Redis `jti` denylist for force-kick (Rust checks at Join). (P7)
+- Rust gets the EdDSA public key via config file or boot-time fetch from `/auth/jwks`; support rotation. ✅ (PEM flag + JWKS URL flag with periodic refresh)
+- **Pairwise media keys (ADR-004):** NestJS generates one AES-128 key per participant pair per room, delivers it to **both** members over the authenticated REST/session channel (never via the media server). Rotation every N minutes → new `kid`; clients announce `KeyUpdate{kid}` on their control streams. Rust never receives keys. Missing key for a peer blocks audio with that peer (not the whole `JoinRoom`). ✅ (delivery; timed rotation + client `KeyUpdate` announce land with the P6/P7 clients)
+- **Dev stand-in until P5:** `p4a_harness` mints room grants and one pairwise key per pair (room-wide `kid` from 1) and serves both over `GET /state` on `http://127.0.0.1:7860` (override `RVP_HARNESS_HTTP`) — the Flutter demo and E2E tests consume exactly this shape; NestJS must serve the same JSON in P5. (Still the Flutter demo's source until the P6 client switch; Nest grant JSON is a superset.)
 
 ---
 
@@ -281,7 +283,7 @@ Deliverables (docs + decisions, no production code):
 2. **P2** JWT auth + RVP control handshake + packet format tests + pairwise key handoff + AES-GCM test vectors
 3. **P3** Rooms + SFU forward (two+ Rust clients talking; server forwards ciphertext opaquely)
 4. **P4** In-house Flutter plugin (`rvp_flutter_quic`) → capture/Opus/crypto/jitter/playback (no `flutter_quic` spike) — split: **P4a** plugin transport (`flutter_rust_bridge` over quinn: connect, control bi-stream, datagrams) → **P4b** audio pipeline (PCM capture → `opus_codec_dart` → pairwise crypto → jitter buffer → playback) + E2E voice demo — **P4a ✅ shipped; P4b ✅ shipped** (audio pipeline + `apps/flutter` loopback/two-device voice demo)
-5. **P5** NestJS rooms/grants wired
+5. **P5** NestJS rooms/grants wired — **✅ shipped** (`services/nest`: login/rooms/grants/JWKS on Postgres; Rust JWKS verification + rotation in `rvp-cli`)
 6. **P6** TanStack web client — WebTransport spike (HTTP/3 endpoint crate) → AudioWorklet/WebCodecs/WebCrypto pipeline + Playwright E2E
 7. **P7** Hardening, metrics, loadgen, LiveKit comparison (includes web client)
 8. **P8** Multi-instance routing (Redis room directory)
