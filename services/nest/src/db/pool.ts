@@ -40,6 +40,18 @@ CREATE TABLE IF NOT EXISTS pair_keys (
   UNIQUE (room_id, user_a, user_b),
   CHECK (user_a < user_b)
 );
+
+-- P7c revocation: every issued media grant's jti, so a host kick can mark
+-- the live ones revoked. rvp-cli polls GET /auth/revoked (unexpired revoked
+-- jtis); the media server denies them at Join and kicks live sessions.
+CREATE TABLE IF NOT EXISTS grant_issues (
+  jti        text PRIMARY KEY,
+  room_id    uuid NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+  user_id    text NOT NULL,
+  expires_at timestamptz NOT NULL,
+  revoked_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS grant_issues_room_user_idx ON grant_issues (room_id, user_id);
 `;
 
 export async function migrate(pool: Pool): Promise<void> {
