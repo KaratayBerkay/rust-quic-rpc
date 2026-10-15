@@ -26,6 +26,12 @@ pub trait ParticipantTx: Send + Sync + 'static {
     fn send_datagram(&self, bytes: Bytes);
     /// Best-effort control frame write; implementations serialize per peer.
     fn send_control(&self, frame: Bytes) -> BoxFut<'static, ()>;
+    /// Flush and close the control stream after a terminal Error frame so the
+    /// frame reaches the peer before the connection is torn down (P7b:
+    /// dropping the connection otherwise races the write). Default no-op.
+    fn finish_control(&self) -> BoxFut<'static, ()> {
+        Box::pin(std::future::ready(()))
+    }
 }
 
 /// Frame reader used by the control handshake (plan §3.4).
@@ -123,6 +129,20 @@ impl ParticipantTx for QuinnTx {
             let _ = tokio::time::timeout(CONTROL_WRITE_TIMEOUT, guard.write_all(&frame)).await;
         })
     }
+
+    fn finish_control(&self) -> BoxFut<'static, ()> {
+        let control = Arc::clone(&self.control);
+        Box::pin(async move {
+            let mut guard = control.lock().await;
+            let flush = async {
+                if guard.finish().is_ok() {
+                    // Resolves once the peer reads the stream to completion.
+                    let _ = guard.stopped().await;
+                }
+            };
+            let _ = tokio::time::timeout(CONTROL_WRITE_TIMEOUT, flush).await;
+        })
+    }
 }
 
 // --- wtransport adapters --------------------------------------------------
@@ -205,6 +225,19 @@ impl ParticipantTx for WtTx {
         Box::pin(async move {
             let mut guard = control.lock().await;
             let _ = tokio::time::timeout(CONTROL_WRITE_TIMEOUT, guard.write_all(&frame)).await;
+        })
+    }
+
+    fn finish_control(&self) -> BoxFut<'static, ()> {
+        let control = Arc::clone(&self.control);
+        Box::pin(async move {
+            let mut guard = control.lock().await;
+            let flush = async {
+                if guard.finish().await.is_ok() {
+                    let _ = guard.stopped().await;
+                }
+            };
+            let _ = tokio::time::timeout(CONTROL_WRITE_TIMEOUT, flush).await;
         })
     }
 }

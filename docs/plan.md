@@ -122,7 +122,7 @@ plugins/
 - Per-connection tokio task reads DATAGRAMs → parse header (no alloc; `Bytes` slice) → room lookup → fanout.
 - Room state: `Arc<Room>` + `DashMap` or sharded `RwLock<HashMap<ParticipantId, ParticipantHandle>>`; handles hold `quinn::Connection`.
 - Fanout: `send_datagram(bytes.clone())` — `Bytes` refcount, not buffer copy. Quinn's bounded send buffer drops oldest on overflow (correct for voice).
-- Bounded ingress: per-participant pps + bps token buckets; drop + metric on exceed.
+- Bounded ingress: per-participant pps + bps token buckets; drop + metric on exceed. ✅ (P7b shipped: `rvp-server/src/limits.rs`)
 - No Opus decode/re-encode on the media path.
 - No seal/open on the server hot path: `rvp-crypto` is **not** linked into `rvp-server`; ciphertext is forwarded opaquely.
 - Observability: `tracing` + `metrics`/Prometheus; counters sampled; never log tokens.
@@ -247,7 +247,7 @@ Note: the roster has **no TanStack-specific agent** — `frontend-developer` cov
 | Identity | NestJS-issued EdDSA JWT, short TTL |
 | Room authz | Grant claims + server-side capacity/membership checks |
 | Replay | `exp` + optional `jti` denylist; media-seq anti-replay not needed for live audio |
-| DoS | QUIC retry tokens, per-IP/per-user connection caps, pps/bps limits, room caps, datagram size caps, malformed-header drops |
+| DoS | QUIC retry tokens, per-IP/per-user connection caps, pps/bps limits, room caps, datagram size caps, malformed-header drops ✅ (P7b shipped) |
 | Secrets | Cert/key via env/files, never in git; no token logging |
 
 ---
@@ -286,7 +286,7 @@ Deliverables (docs + decisions, no production code):
 4. **P4** In-house Flutter plugin (`rvp_flutter_quic`) → capture/Opus/crypto/jitter/playback (no `flutter_quic` spike) — split: **P4a** plugin transport (`flutter_rust_bridge` over quinn: connect, control bi-stream, datagrams) → **P4b** audio pipeline (PCM capture → `opus_codec_dart` → pairwise crypto → jitter buffer → playback) + E2E voice demo — **P4a ✅ shipped; P4b ✅ shipped** (audio pipeline + `apps/flutter` loopback/two-device voice demo)
 5. **P5** NestJS rooms/grants wired — **✅ shipped** (`services/nest`: login/rooms/grants/JWKS on Postgres; Rust JWKS verification + rotation in `rvp-cli`)
 6. **P6** Web client — split: **P6a** WebTransport/HTTP3 endpoint + web client shell (control handshake, datagram loopback, TS codec with Rust-anchored vectors) → **P6b** audio pipeline (AudioWorklet/WebCodecs/WebCrypto) + Playwright voice E2E — **P6a ✅ shipped** (`rvp-server` WT endpoint via `wtransport` sharing ServerState/registry/fanout; `apps/web` Vite SPA with login/rooms/in-call handshake, roster, datagram counters; cross-endpoint quinn↔WT fanout test) — **P6b ✅ shipped** (TS media/crypto/jitter/voice modules with Rust-anchored vectors; AudioWorklet 48 kHz capture/playback + WebCodecs Opus encode/decode; pairwise AES-GCM seal fanout N−1 per frame; in-call mute + voice stats UI; Playwright smoke E2E green, full-stack voice E2E gated on `RVP_E2E=1`)
-7. **P7** Hardening, metrics, loadgen, LiveKit comparison (includes web client) — split like P4/P6: **P7a** observability (metrics/Prometheus) → **P7b** server hardening → **P7c** KeyUpdate + revocation → **P7d** loadgen + LiveKit A/B — **P7a ✅ shipped** (`crates/rvp-metrics`: `metrics` + `metrics-exporter-prometheus`, process-global recorder, `/metrics` HTTP endpoint; instrumented fanout bytes/datagrams/copies, participant/room gauges, handshake latency + failure reasons, control errors, room-full, connection open/close by transport; `rvp-cli --metrics-listen <addr>`; Prometheus render + scrape integration test) — P7b–P7d pending
+7. **P7** Hardening, metrics, loadgen, LiveKit comparison (includes web client) — split like P4/P6: **P7a** observability (metrics/Prometheus) → **P7b** server hardening → **P7c** KeyUpdate + revocation → **P7d** loadgen + LiveKit A/B — **P7a ✅ shipped** (`crates/rvp-metrics`: `metrics` + `metrics-exporter-prometheus`, process-global recorder, `/metrics` HTTP endpoint; instrumented fanout bytes/datagrams/copies, participant/room gauges, handshake latency + failure reasons, control errors, room-full, connection open/close by transport; `rvp-cli --metrics-listen <addr>`; Prometheus render + scrape integration test) — **P7b ✅ shipped** (`rvp-server/src/limits.rs`: `Limits` + per-participant pps/bps token buckets + `DEFAULT_MAX_DATAGRAM` size cap enforced on fanout, `ConnLimiter` per-IP/per-user caps with RAII slot release shared by both endpoints, stateless QUIC `Retry` before any state in both accept loops; new control error `CONNECTION_LIMIT` (503) mirrored to TS/Dart; metrics `rvp_datagrams_dropped_total{reason}`, `rvp_connections_rejected_total{reason}`, `rvp_quic_retries_total`; `tests/hardening.rs`) — P7c–P7d pending
 8. **P8** Multi-instance routing (Redis room directory)
 
 **Post-v1 (deferred — in plan, not scheduled until v1 ships; see §12):**

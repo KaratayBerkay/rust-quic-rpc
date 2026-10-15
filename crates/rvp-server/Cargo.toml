@@ -37,3 +37,7 @@ required-features = ["test-utils"]
 [[test]]
 name = "wt_loopback"
 required-features = ["test-utils"]
+
+[[test]]
+name = "hardening"
+required-features = ["test-utils"]

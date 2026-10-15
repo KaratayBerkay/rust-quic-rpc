@@ -34,6 +34,7 @@ pub mod error_code {
     pub const TIMEOUT: u16 = 408;
     pub const ROOM_FULL: u16 = 429;
     pub const INTERNAL: u16 = 500;
+    pub const CONNECTION_LIMIT: u16 = 503;
     pub const VERSION_UNSUPPORTED: u16 = 505;
 }
 

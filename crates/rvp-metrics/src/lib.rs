@@ -173,4 +173,20 @@ pub mod instrument {
     pub fn connection_closed(transport: &'static str) {
         metrics::gauge!("rvp_connections", "transport" => transport).decrement(1.0);
     }
+
+    /// Ingress datagram dropped by a P7b hardening rule (`oversized`,
+    /// `rate_pps`, `rate_bps`).
+    pub fn datagram_dropped(reason: &'static str) {
+        metrics::counter!("rvp_datagrams_dropped_total", "reason" => reason).increment(1);
+    }
+
+    /// Connection rejected before/at admission (`ip_cap`, `user_cap`).
+    pub fn connection_rejected(reason: &'static str) {
+        metrics::counter!("rvp_connections_rejected_total", "reason" => reason).increment(1);
+    }
+
+    /// QUIC Retry packet sent to validate the peer address (plan §10).
+    pub fn retry_sent() {
+        metrics::counter!("rvp_quic_retries_total").increment(1);
+    }
 }
