@@ -111,7 +111,9 @@ crates/
   rvp-loadgen/   # Phase 6 load tool (pure-Rust quinn client)
 apps/
   web/           # TanStack (React) phone-call web client (P6)
-  flutter/       # Flutter mobile client (P4) — location TBD at Phase 1
+  flutter/       # Flutter mobile client app (P4b+)
+plugins/
+  rvp_flutter_quic/  # in-house QUIC plugin, flutter_rust_bridge over quinn (P4a)
 ```
 
 ### Hot-path principles
@@ -163,10 +165,10 @@ ui → CallController (Dart)
 - **A (chosen):** in-house `rvp_flutter_quic` plugin — `flutter_rust_bridge` over quinn; we control datagram APIs, CI, versions.
 - **B (disabled):** third-party `flutter_quic` spike **cancelled for now**. Revisit only if the in-house plugin slips badly, and only after a fresh datagram/isolate spike.
 
-**Audio strategies (Q2):**
+**Audio strategies (Q2 — resolved):**
 
 - **A:** `flutter_recorder` streaming Opus (less Dart code, Android AEC).
-- **B (recommended):** PCM stream + `opus_codec_dart` encoder — classic WebRTC-style pipeline, better testability.
+- **B (chosen):** PCM stream + `opus_codec_dart` encoder — classic WebRTC-style pipeline, better testability.
 - Platform AEC/VoIP processing: iOS VoiceProcessingIO; Android AAudio path; document Bluetooth SCO limits; background calling is OS-limited.
 
 ---
@@ -275,7 +277,7 @@ Deliverables (docs + decisions, no production code):
 1. **P1** Rust QUIC echo + DATAGRAM loopback (Rust test client)
 2. **P2** JWT auth + RVP control handshake + packet format tests + pairwise key handoff + AES-GCM test vectors
 3. **P3** Rooms + SFU forward (two+ Rust clients talking; server forwards ciphertext opaquely)
-4. **P4** In-house Flutter plugin (`rvp_flutter_quic`) → capture/Opus/crypto/jitter/playback (no `flutter_quic` spike)
+4. **P4** In-house Flutter plugin (`rvp_flutter_quic`) → capture/Opus/crypto/jitter/playback (no `flutter_quic` spike) — split: **P4a** plugin transport (`flutter_rust_bridge` over quinn: connect, control bi-stream, datagrams) → **P4b** audio pipeline (PCM capture → `opus_codec_dart` → pairwise crypto → jitter buffer → playback) + E2E voice demo
 5. **P5** NestJS rooms/grants wired
 6. **P6** TanStack web client — WebTransport spike (HTTP/3 endpoint crate) → AudioWorklet/WebCodecs/WebCrypto pipeline + Playwright E2E
 7. **P7** Hardening, metrics, loadgen, LiveKit comparison (includes web client)
@@ -295,9 +297,9 @@ Exit criteria per phase: builds green, integration test list, runnable demo comm
 ## 11. Open decisions
 
 1. ~~**Flutter QUIC:** in-house FFI plugin vs spike `flutter_quic` first?~~ **Resolved:** in-house `rvp_flutter_quic`; `flutter_quic` spike disabled.
-2. **Flutter audio:** PCM + `opus_codec_dart` (recommended) vs `flutter_recorder` Opus stream?
+2. ~~**Flutter audio:** PCM + `opus_codec_dart` vs `flutter_recorder` Opus stream?~~ **Resolved:** PCM + `opus_codec_dart` (chosen at P4a kickoff; classic WebRTC-style pipeline, deterministic unit tests).
 3. **Control encoding:** hand-rolled binary (recommended for P1–3) vs protobuf from day one?
-4. **Target platforms P4:** Android + iOS only, or + desktop for faster CI?
+4. ~~**Target platforms P4:** Android + iOS only, or + desktop for faster CI?~~ **Resolved:** Android + iOS only; CI gates Dart code with `flutter analyze` + host `flutter test`, compile-checks Android, iOS builds run on demand (needs macOS).
 5. **Media grant TTL:** 60 s vs 120 s; `jti` denylist yes/no for v1?
 6. **Phase 0 output:** markdown docs only, or also mermaid sequence diagrams?
 7. **Pairwise crypto scale limit:** at what room size (N) do we drop pairwise E2E, switch to a group key, or accept publisher uplink ×(N−1)?
@@ -355,7 +357,7 @@ If the product goal is "standard video conferencing tomorrow", **LiveKit is the 
 Repo: `https://github.com/KaratayBerkay/rust-quic-rpc` · Branch: `main` · Hooks: husky · CI: GitHub Actions.
 
 - **One PR per phase.** Branch naming: `phase/P<N>-<slug>` (e.g. `phase/P0-design`, `phase/P1-quic-echo`, `phase/P2-auth`). `main` is protected by convention: no direct pushes of phase work.
-- **PR gate:** CI green (docs lint + commitlint now; per-phase jobs activate when code lands: `crates/**` → Rust fmt/clippy/test, `apps/flutter` → analyze/test, `apps/web` → lint/build, `services/nest` → lint/test/build), human review, squash-merge with conventional title.
+- **PR gate:** CI green (docs lint + commitlint always; a detect job computes per-area flags with step-level `hashFiles` — job-level `if` may not call it — and gates the per-phase jobs: `crates/**` + `plugins/**/rust/**` → Rust fmt/clippy/test, `apps/flutter` → analyze/test, `plugins/rvp_flutter_quic/**` → analyze/test + Android APK compile-check, `apps/web` → lint/build, `services/nest` → lint/test/build), human review, squash-merge with conventional title.
 - **Husky (local):** `pre-commit` = markdownlint on docs; `commit-msg` = commitlint (`config-conventional`). Bypass only via explicit `--no-verify` with review note.
 - **Commit/PR title convention:** `type(scope): summary` — scopes: `docs`, `proto`, `auth`, `server`, `flutter`, `web`, `nest`, `ci`.
 

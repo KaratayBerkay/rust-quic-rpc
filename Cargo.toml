@@ -6,6 +6,7 @@ members = [
     "crates/rvp-crypto",
     "crates/rvp-server",
     "crates/rvp-cli",
+    "plugins/rvp_flutter_quic/rust",
 ]
 
 [workspace.package]
