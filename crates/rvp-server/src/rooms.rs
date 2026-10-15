@@ -1,27 +1,26 @@
-//! Room registry + SFU fanout bookkeeping (plan §4).
+//! Room registry + SFU fanout bookkeeping (plan §4, transport-agnostic P6a).
 //!
 //! Hot-path rules:
 //! - Room state lookups are lock-cheap; locks are never held across `.await`
-//! - Fanout clones `quinn::Connection` handles (Arc) and `Bytes` (refcount),
+//! - Fanout clones `Arc<dyn ParticipantTx>` handles and `Bytes` (refcount),
 //!   never media buffers
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use dashmap::DashMap;
-use quinn::Connection;
 use rvp_proto::control::RosterEntry;
-use tokio::sync::Mutex;
 use tracing::debug;
+
+use crate::transport::ParticipantTx;
 
 /// Hard room cap for P3 (raised/config later).
 pub const MAX_ROOM_PARTICIPANTS: usize = 8;
 
 pub struct Participant {
     pub user_id: String,
-    pub conn: Connection,
-    /// Control stream kept open for server-push events (ParticipantJoined/Left).
-    pub control: Arc<Mutex<quinn::SendStream>>,
+    /// Transport-agnostic send side (quinn or WebTransport, plan §7).
+    pub tx: Arc<dyn ParticipantTx>,
 }
 
 pub struct Room {
@@ -70,25 +69,26 @@ impl Room {
             .is_empty()
     }
 
-    /// Snapshot of *other* connections for fanout (lock released before send).
-    pub(crate) fn fanout_targets(&self, from: u64) -> Vec<Connection> {
+    /// Snapshot of *other* send handles for media fanout (lock released
+    /// before send).
+    pub(crate) fn fanout_targets(&self, from: u64) -> Vec<Arc<dyn ParticipantTx>> {
         self.participants
             .read()
             .expect("room lock poisoned")
             .iter()
             .filter(|(pid, _)| **pid != from)
-            .map(|(_, p)| p.conn.clone())
+            .map(|(_, p)| Arc::clone(&p.tx))
             .collect()
     }
 
-    /// Snapshot of *other* control streams for event broadcast.
-    pub(crate) fn event_targets(&self, except: u64) -> Vec<(u64, Arc<Mutex<quinn::SendStream>>)> {
+    /// Snapshot of *other* send handles for control-event broadcast.
+    pub(crate) fn event_targets(&self, except: u64) -> Vec<(u64, Arc<dyn ParticipantTx>)> {
         self.participants
             .read()
             .expect("room lock poisoned")
             .iter()
             .filter(|(pid, _)| **pid != except)
-            .map(|(pid, p)| (*pid, p.control.clone()))
+            .map(|(pid, p)| (*pid, Arc::clone(&p.tx)))
             .collect()
     }
 }
@@ -111,8 +111,7 @@ impl RoomRegistry {
         room_id: &str,
         participant_id: u64,
         user_id: &str,
-        conn: Connection,
-        control: Arc<Mutex<quinn::SendStream>>,
+        tx: Arc<dyn ParticipantTx>,
     ) -> Result<(Arc<Room>, Vec<RosterEntry>), RoomError> {
         let room = self
             .rooms
@@ -124,8 +123,7 @@ impl RoomRegistry {
                 participant_id,
                 Participant {
                     user_id: user_id.to_owned(),
-                    conn,
-                    control,
+                    tx,
                 },
             )
             .map_err(|_| RoomError::Full)?;

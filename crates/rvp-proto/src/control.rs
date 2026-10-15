@@ -315,4 +315,81 @@ mod tests {
             Err(ControlError::UnknownType(0xEE01))
         );
     }
+
+    /// Exact wire bytes — these hex strings are also pinned in the TypeScript
+    /// codec tests (`apps/web/src/lib/control.test.ts`), so a change here must
+    /// be mirrored on the web client (plan §7).
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn hello_wire_vector() {
+        let msg = ControlMessage::Hello {
+            protocol_version: 1,
+            grant_jwt: "j".into(),
+        };
+        assert_eq!(hex(&msg.encode()), "00000005000100016a");
+    }
+
+    #[test]
+    fn join_room_wire_vector() {
+        assert_eq!(hex(&ControlMessage::JoinRoom.encode()), "000000020002");
+    }
+
+    #[test]
+    fn welcome_empty_roster_wire_vector() {
+        let msg = ControlMessage::Welcome {
+            participant_id: 1,
+            max_datagram: 1200,
+            roster: vec![],
+        };
+        assert_eq!(hex(&msg.encode()), "0000000e0003000000000000000104b00000");
+    }
+
+    #[test]
+    fn welcome_roster_wire_vector() {
+        let msg = ControlMessage::Welcome {
+            participant_id: 1,
+            max_datagram: 1200,
+            roster: vec![
+                RosterEntry {
+                    participant_id: 1,
+                    user_id: "alice".into(),
+                },
+                RosterEntry {
+                    participant_id: 2,
+                    user_id: "bob".into(),
+                },
+            ],
+        };
+        assert_eq!(
+            hex(&msg.encode()),
+            "0000002a0003000000000000000104b0000200000000000000010005616c69636500000000000000020003626f62"
+        );
+    }
+
+    #[test]
+    fn participant_joined_wire_vector() {
+        let msg = ControlMessage::ParticipantJoined {
+            participant_id: 2,
+            user_id: "bob".into(),
+        };
+        assert_eq!(hex(&msg.encode()), "0000000f000400000000000000020003626f62");
+    }
+
+    #[test]
+    fn participant_left_wire_vector() {
+        let msg = ControlMessage::ParticipantLeft { participant_id: 1 };
+        assert_eq!(hex(&msg.encode()), "0000000a00050000000000000001");
+    }
+
+    #[test]
+    fn error_wire_vector() {
+        let msg = ControlMessage::Error {
+            code: 401,
+            message: "x".into(),
+        };
+        assert_eq!(hex(&msg.encode()), "00000005000f019178");
+    }
 }

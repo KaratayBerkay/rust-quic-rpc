@@ -26,6 +26,9 @@ struct Args {
     /// UDP listen address.
     #[arg(long, default_value = "127.0.0.1:4433")]
     listen: SocketAddr,
+    /// WebTransport/HTTP3 listen address (same JWT grants + rooms as --listen).
+    #[arg(long)]
+    wt_listen: Option<SocketAddr>,
     /// NestJS Ed25519 media-grant public key (PEM, SPKI).
     #[arg(long, group = "auth_key")]
     jwt_public_key: Option<PathBuf>,
@@ -61,15 +64,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         spawn_jwks_refresh(Arc::clone(&verifier), url.clone());
     }
 
-    let server = rvp_server::start_server(
+    let state = Arc::new(rvp_server::ServerState::new(verifier));
+    let server = rvp_server::start_server_with_state(
         args.listen,
         rvp_server::server_config_self_signed()?,
-        verifier,
+        state.clone(),
     )
     .await?;
-    info!(addr = %server.local_addr(), "rvp-server up — press ctrl-c to stop");
+    info!(addr = %server.local_addr(), "quic endpoint up");
+    let wt = match args.wt_listen {
+        Some(addr) => {
+            let wt = rvp_server::wt::start_wt_server(addr, state).await?;
+            info!(
+                addr = %wt.local_addr(),
+                cert_hash = %wt.cert_hash_hex(),
+                "webtransport endpoint up — browsers pin this hash via \
+                 serverCertificateHashes"
+            );
+            Some(wt)
+        }
+        None => None,
+    };
+    info!("rvp-server up — press ctrl-c to stop");
     tokio::signal::ctrl_c().await?;
     info!("shutting down");
+    if let Some(wt) = wt {
+        wt.shutdown().await;
+    }
     server.shutdown().await;
     Ok(())
 }

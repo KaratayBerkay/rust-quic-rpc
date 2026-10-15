@@ -1,9 +1,9 @@
-//! RVP media server (Phase 3: rooms + SFU fanout).
+//! RVP media server (P3 rooms + SFU fanout; P6a transport-agnostic core).
 //!
-//! Per connection (plan §3.4):
-//! 1. TLS 1.3 (quinn/rustls, ALPN `rvp/1`)
+//! Per connection (plan §3.4), on either endpoint (raw QUIC or WebTransport):
+//! 1. TLS 1.3 (ALPN `rvp/1` or HTTP/3 WebTransport)
 //! 2. Client opens the control bi-stream and sends `Hello { version, grant_jwt }`
-//! 3. Server verifies the EdDSA grant **offline** (`rvp-auth`), rate-limit hook slot
+//! 3. Server verifies the EdDSA grant **offline** (`rvp-auth`)
 //! 4. `JoinRoom` → capacity check → `Welcome { participant_id, roster, ... }`
 //! 5. Only after `Welcome` are DATAGRAMs read — and then they are fanned out
 //!    to every *other* connection in the room (opaque bytes; no crypto here)
@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use quinn::{Endpoint, ServerConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rvp_auth::Verifier;
+use rvp_auth::{GrantClaims, Verifier};
 use rvp_proto::control::{
     error_code, ControlError, ControlMessage, MAX_FRAME_LEN, PROTOCOL_VERSION,
 };
@@ -23,9 +23,16 @@ use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
 pub mod rooms;
+pub mod transport;
+pub mod wt;
+
 pub use rooms::{RoomError, RoomRegistry, MAX_ROOM_PARTICIPANTS};
 
 use rooms::Room;
+use transport::{
+    ControlReader, ControlWriter, DatagramSource, ParticipantTx, QuinnControlReader,
+    QuinnControlWriter, QuinnDatagramSource, QuinnTx,
+};
 
 pub const DEFAULT_MAX_DATAGRAM: usize = 1200;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -112,10 +119,11 @@ fn transport_config() -> quinn::TransportConfig {
     t
 }
 
-/// Shared per-server state (rooms + grant verifier).
+/// Shared per-server state (rooms + grant verifier). One instance serves
+/// both the quinn and WebTransport endpoints (plan §7).
 pub struct ServerState {
     pub registry: RoomRegistry,
-    verifier: Arc<Verifier>,
+    pub(crate) verifier: Arc<Verifier>,
 }
 
 impl ServerState {
@@ -172,84 +180,112 @@ async fn handle_connection(
     conn: quinn::Connection,
     state: Arc<ServerState>,
 ) -> Result<(), ServerError> {
-    let (mut send, mut recv) = conn
+    let (send, recv) = conn
         .accept_bi()
         .await
         .map_err(|e| ServerError::Connection(format!("control stream: {e}")))?;
 
+    let mut writer = QuinnControlWriter(send);
+    let mut reader = QuinnControlReader(recv);
+    let claims = match drive_handshake(&state, &mut reader, &mut writer).await {
+        Some(claims) => claims,
+        None => return Ok(()),
+    };
+    let QuinnControlWriter(send) = writer;
+    let tx = Arc::new(QuinnTx::new(conn.clone(), send));
+    let mut dgrams = QuinnDatagramSource(conn);
+    serve_joined(state, claims, tx, &mut dgrams).await
+}
+
+/// Control handshake (plan §3.4 steps 2–4): Hello → verify grant → JoinRoom.
+/// Returns `None` after writing an Error frame (unsupported version, bad
+/// grant, malformed frames). Transport-agnostic — used by both endpoints.
+pub(crate) async fn drive_handshake(
+    state: &ServerState,
+    reader: &mut dyn ControlReader,
+    writer: &mut dyn ControlWriter,
+) -> Option<GrantClaims> {
     // --- Hello: verify grant (plan §3.4 step 3) ---
-    let claims = match read_control(&mut recv).await {
+    let claims = match read_control(reader).await {
         Ok(ControlMessage::Hello {
             protocol_version,
             grant_jwt,
         }) => {
             if protocol_version != PROTOCOL_VERSION {
                 send_error(
-                    &mut send,
+                    writer,
                     error_code::VERSION_UNSUPPORTED,
                     &format!("supported version {PROTOCOL_VERSION}"),
                 )
                 .await;
-                return Ok(());
+                return None;
             }
             match state.verifier.verify(&grant_jwt) {
                 Ok(claims) => claims,
                 Err(e) => {
                     warn!(error = %e, "grant rejected");
-                    send_error(&mut send, error_code::UNAUTHORIZED, &e.to_string()).await;
-                    return Ok(());
+                    send_error(writer, error_code::UNAUTHORIZED, &e.to_string()).await;
+                    return None;
                 }
             }
         }
         Ok(other) => {
             send_error(
-                &mut send,
+                writer,
                 error_code::BAD_REQUEST,
                 &format!("expected Hello, got {other:?}"),
             )
             .await;
-            return Ok(());
+            return None;
         }
         Err(e) => {
-            send_error(&mut send, error_code::BAD_REQUEST, &e.to_string()).await;
-            return Ok(());
+            send_error(writer, error_code::BAD_REQUEST, &e.to_string()).await;
+            return None;
         }
     };
 
     // --- JoinRoom (plan §3.4 step 4) ---
-    match read_control(&mut recv).await {
-        Ok(ControlMessage::JoinRoom) => {}
+    match read_control(reader).await {
+        Ok(ControlMessage::JoinRoom) => Some(claims),
         Ok(other) => {
             send_error(
-                &mut send,
+                writer,
                 error_code::BAD_REQUEST,
                 &format!("expected JoinRoom, got {other:?}"),
             )
             .await;
-            return Ok(());
+            None
         }
         Err(e) => {
-            send_error(&mut send, error_code::BAD_REQUEST, &e.to_string()).await;
-            return Ok(());
+            send_error(writer, error_code::BAD_REQUEST, &e.to_string()).await;
+            None
         }
     }
+}
 
+/// Join the room, send Welcome, broadcast ParticipantJoined, fan out media
+/// until the datagram source ends, then tear down. Transport-agnostic.
+pub(crate) async fn serve_joined(
+    state: Arc<ServerState>,
+    claims: GrantClaims,
+    tx: Arc<dyn ParticipantTx>,
+    datagrams: &mut dyn DatagramSource,
+) -> Result<(), ServerError> {
     let participant_id = PARTICIPANT_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let control = Arc::new(tokio::sync::Mutex::new(send));
     let (room, roster) = match state.registry.join(
         &claims.room_id,
         participant_id,
         &claims.user_id,
-        conn.clone(),
-        control.clone(),
+        Arc::clone(&tx),
     ) {
         Ok(joined) => joined,
         Err(RoomError::Full) => {
-            let mut guard = control.lock().await;
-            send_error(
-                &mut guard,
-                error_code::ROOM_FULL,
-                &format!("room capacity {}", MAX_ROOM_PARTICIPANTS),
+            tx.send_control(
+                ControlMessage::Error {
+                    code: error_code::ROOM_FULL,
+                    message: format!("room capacity {}", MAX_ROOM_PARTICIPANTS),
+                }
+                .encode(),
             )
             .await;
             return Ok(());
@@ -262,13 +298,7 @@ async fn handle_connection(
         max_datagram: DEFAULT_MAX_DATAGRAM as u16,
         roster,
     };
-    {
-        let mut guard = control.lock().await;
-        guard
-            .write_all(&welcome.encode())
-            .await
-            .map_err(|e| ServerError::Connection(format!("welcome: {e}")))?;
-    }
+    tx.send_control(welcome.encode()).await;
     info!(
         %participant_id,
         user = %claims.user_id,
@@ -277,7 +307,6 @@ async fn handle_connection(
         "joined room (datagrams now accepted)"
     );
 
-    // Tell the rest of the room.
     broadcast_event(
         &room,
         participant_id,
@@ -288,10 +317,8 @@ async fn handle_connection(
     )
     .await;
 
-    // --- P3 media path: SFU fanout to everyone else in the room ---
-    let result = fanout_loop(&conn, &room, participant_id).await;
+    let result = fanout_loop(datagrams, &room, participant_id).await;
 
-    // --- Teardown: remove from room, notify peers, GC empty rooms ---
     if let Some(room) = state.registry.leave(&claims.room_id, participant_id) {
         broadcast_event(
             &room,
@@ -306,46 +333,38 @@ async fn handle_connection(
 
 /// Hot path: read datagram → fanout `Bytes` clones to every other member.
 async fn fanout_loop(
-    conn: &quinn::Connection,
+    datagrams: &mut dyn DatagramSource,
     room: &Arc<Room>,
     from: u64,
 ) -> Result<(), ServerError> {
-    while let Ok(dgram) = conn.read_datagram().await {
+    while let Some(dgram) = datagrams.recv_datagram().await {
         let targets = room.fanout_targets(from);
         debug!(len = dgram.len(), peers = targets.len(), "fanout datagram");
         for peer in targets {
-            // Quinn drops oldest on overflow — correct for live audio (plan §4).
-            let _ = peer.send_datagram(dgram.clone());
+            // Congestion drops the datagram — correct for live audio (plan §4).
+            peer.send_datagram(dgram.clone());
         }
     }
     Ok(())
 }
 
 /// Broadcast a control event to every member except `except`.
-/// Locks are taken per-peer and never held across room locks.
 async fn broadcast_event(room: &Arc<Room>, except: u64, msg: ControlMessage) {
     let targets = room.event_targets(except);
     let frame = msg.encode();
-    for (_pid, control) in targets {
-        let control = control.clone();
-        let frame = frame.clone();
-        let send = tokio::spawn(async move {
-            let mut guard = control.lock().await;
-            let _ = timeout(Duration::from_secs(2), guard.write_all(&frame)).await;
-        });
-        let _ = send.await;
+    for (_pid, tx) in targets {
+        tx.send_control(frame.clone()).await;
     }
 }
 
 /// Read one length-prefixed control frame (u32 BE length + body).
-async fn read_control(recv: &mut quinn::RecvStream) -> Result<ControlMessage, ControlError> {
-    let msg = timeout(HANDSHAKE_TIMEOUT, read_control_inner(recv))
+async fn read_control(recv: &mut dyn ControlReader) -> Result<ControlMessage, ControlError> {
+    timeout(HANDSHAKE_TIMEOUT, read_control_inner(recv))
         .await
-        .map_err(|_| ControlError::Truncated)?;
-    msg
+        .map_err(|_| ControlError::Truncated)?
 }
 
-async fn read_control_inner(recv: &mut quinn::RecvStream) -> Result<ControlMessage, ControlError> {
+async fn read_control_inner(recv: &mut dyn ControlReader) -> Result<ControlMessage, ControlError> {
     let mut len_buf = [0u8; 4];
     recv.read_exact(&mut len_buf)
         .await
@@ -361,16 +380,14 @@ async fn read_control_inner(recv: &mut quinn::RecvStream) -> Result<ControlMessa
     ControlMessage::decode_body(&body)
 }
 
-async fn send_error(send: &mut quinn::SendStream, code: u16, message: &str) {
+async fn send_error(send: &mut dyn ControlWriter, code: u16, message: &str) {
     let frame = ControlMessage::Error {
         code,
         message: message.to_owned(),
     }
     .encode();
     let _ = send.write_all(&frame).await;
-    let _ = send.finish();
-    // Give the frame a chance to be delivered before the connection is dropped.
-    let _ = timeout(Duration::from_secs(1), send.stopped()).await;
+    let _ = send.finish().await;
 }
 
 #[cfg(feature = "test-utils")]

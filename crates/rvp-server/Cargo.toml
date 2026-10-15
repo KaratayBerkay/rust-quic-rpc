@@ -23,6 +23,7 @@ thiserror = { workspace = true }
 dashmap = { workspace = true }
 rvp-proto = { path = "../rvp-proto" }
 rvp-auth = { path = "../rvp-auth" }
+wtransport = "0.7"
 
 [dev-dependencies]
 jsonwebtoken = { workspace = true }
@@ -30,4 +31,8 @@ serde = { workspace = true }
 
 [[test]]
 name = "loopback"
+required-features = ["test-utils"]
+
+[[test]]
+name = "wt_loopback"
 required-features = ["test-utils"]
