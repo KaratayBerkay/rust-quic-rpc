@@ -2,7 +2,7 @@
 
 Rust + QUIC real-time **voice** server: a DATAGRAM SFU with pairwise end-to-end-encrypted Opus, EdDSA JWT auth via a NestJS control plane, and Flutter + TanStack web clients.
 
-> **Status: Phase 0 — design only.** Full design plan: [`docs/plan.md`](docs/plan.md). No production media code until sign-off.
+> **Status: P1–P4b shipped** — Rust QUIC SFU (rooms, opaque fanout, JWT auth) + Flutter plugin with full voice pipeline and demo (`apps/flutter`); next: NestJS control plane (P5) and web client (P6). Design plan: [`docs/plan.md`](docs/plan.md).
 
 ## Why not just LiveKit?
 
@@ -12,9 +12,9 @@ Documented honestly in [`docs/plan.md` §12](docs/plan.md): LiveKit is the right
 
 | Phase | Scope |
 |---|---|
-| P0 | Design docs + ADRs (current) |
-| P1–P3 | Rust QUIC server: echo → auth/crypto → SFU rooms |
-| P4–P6 | Clients: Flutter plugin, NestJS wiring, TanStack web app |
+| P0 | Design docs + ADRs ✅ |
+| P1–P3 | Rust QUIC server: echo → auth/crypto → SFU rooms ✅ |
+| P4 | Flutter plugin + audio pipeline + voice demo ✅ (NestJS wiring, TanStack web app pending) |
 | P7–P8 | Hardening, loadgen vs LiveKit, multi-instance |
 | P9–P12 | Deferred post-v1: TURN fallback, speaker detection, video, recording |
 

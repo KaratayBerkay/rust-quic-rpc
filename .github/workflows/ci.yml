@@ -117,6 +117,9 @@ jobs:
         working-directory: plugins/rvp_flutter_quic
       - run: flutter analyze
         working-directory: plugins/rvp_flutter_quic/example
+      # Host tests encode/decode Opus against the system libopus
+      # (on-device builds bundle libopus via the opus_codec loader).
+      - run: sudo apt-get update && sudo apt-get install -y libopus0
       - run: cargo build -p rvp_flutter_quic --example p4a_harness
       - run: RVP_HARNESS=../../target/debug/examples/p4a_harness flutter test
         working-directory: plugins/rvp_flutter_quic

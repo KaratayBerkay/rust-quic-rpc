@@ -59,9 +59,9 @@ Deliverable: `docs/protocol-rvp-v1.md` before any implementation.
 ```text
 0        1        2        3        4        5        6        7
 +--------+--------+--------+--------+--------+--------+--------+--------+
-| Ver(4) | Type(4)| Flags  | PT     |        Sequence (u32)             |
+| Ver(4) | Type(4)| Flags  | PT     | KID    | Sequence (u32 BE)        |
 +--------+--------+--------+--------+-----------------------------------+
-|          Timestamp (u32, 48 kHz ticks)      | FrameDurationMs | Rsvd  |
+|          Timestamp (u32 BE, 48 kHz ticks)    | FrameDurationMs | Rsvd  |
 +-----------------------------------------+-------------------+---------+
 | Opus payload (≤ max_datagram − 16)                                  |
 ```
@@ -74,7 +74,7 @@ Design decisions to lock in Phase 0:
 - **Flags:** lifecycle events (`MUTE`, `START`, `STOP`) live on the **control** stream; per-packet `DTX` flag optional.
 - **Dup/reorder:** u32 sequence wrap; receiver drops `seq ≤ last_delivered` (sliding window); gaps trigger PLC.
 - **Payload encryption (app-layer E2E, pairwise — ADR-004):** the Opus payload is AES-128-GCM-encrypted **per recipient pair** before send; QUIC TLS 1.3 stays as hop protection. The server forwards ciphertext it cannot read and never holds keys.
-  - Header stays plaintext (server needs it for room routing/Seq); `kid` (key id, 1 byte) lives in `Rsvd`; `PT=1` marks Opus-Enc (0 = plaintext Opus, tests/interop only).
+  - Header stays plaintext (server needs it for room routing/Seq); `kid` (key id, 1 byte) has a dedicated byte at offset 3 (`Rsvd` = 3 bytes at 13–15); `PT=1` marks Opus-Enc (0 = plaintext Opus, tests/interop only). `kid` is unique room-wide per pair, so the receiving `kid → key` lookup also identifies the sender implicitly.
   - Nonce = u32 `Seq`; rekey via `kid` long before wrap.
   - **Cost:** publisher emits **N−1 ciphertext datagrams per 20 ms frame** (one per peer). Fine for small rooms; revisit at scale (open decision 7).
   - Breaks future server-side recording/mixing (already out of scope for the media path).
@@ -143,6 +143,7 @@ plugins/
 - Revocation: short TTL is primary; optional Redis `jti` denylist for force-kick (Rust checks at Join).
 - Rust gets the EdDSA public key via config file or boot-time fetch from `/auth/jwks`; support rotation.
 - **Pairwise media keys (ADR-004):** NestJS generates one AES-128 key per participant pair per room, delivers it to **both** members over the authenticated REST/session channel (never via the media server). Rotation every N minutes → new `kid`; clients announce `KeyUpdate{kid}` on their control streams. Rust never receives keys. Missing key for a peer blocks audio with that peer (not the whole `JoinRoom`).
+- **Dev stand-in until P5:** `p4a_harness` mints room grants and one pairwise key per pair (room-wide `kid` from 1) and serves both over `GET /state` on `http://127.0.0.1:7860` (override `RVP_HARNESS_HTTP`) — the Flutter demo and E2E tests consume exactly this shape; NestJS must serve the same JSON in P5.
 
 ---
 
@@ -159,6 +160,8 @@ ui → CallController (Dart)
         ├─ JitterBuffer ← DATAGRAM recv
         └─ OpusDecoder → Playback
 ```
+
+**P4b demo (`apps/flutter`):** runs this pipeline end-to-end — loopback mode on one device (mic → alice → SFU → bob → speaker) or two-device mode; grants/keys come from the harness `GET /state` dev endpoint until P5.
 
 **Transport strategies (Q1 — resolved):**
 
@@ -277,7 +280,7 @@ Deliverables (docs + decisions, no production code):
 1. **P1** Rust QUIC echo + DATAGRAM loopback (Rust test client)
 2. **P2** JWT auth + RVP control handshake + packet format tests + pairwise key handoff + AES-GCM test vectors
 3. **P3** Rooms + SFU forward (two+ Rust clients talking; server forwards ciphertext opaquely)
-4. **P4** In-house Flutter plugin (`rvp_flutter_quic`) → capture/Opus/crypto/jitter/playback (no `flutter_quic` spike) — split: **P4a** plugin transport (`flutter_rust_bridge` over quinn: connect, control bi-stream, datagrams) → **P4b** audio pipeline (PCM capture → `opus_codec_dart` → pairwise crypto → jitter buffer → playback) + E2E voice demo
+4. **P4** In-house Flutter plugin (`rvp_flutter_quic`) → capture/Opus/crypto/jitter/playback (no `flutter_quic` spike) — split: **P4a** plugin transport (`flutter_rust_bridge` over quinn: connect, control bi-stream, datagrams) → **P4b** audio pipeline (PCM capture → `opus_codec_dart` → pairwise crypto → jitter buffer → playback) + E2E voice demo — **P4a ✅ shipped; P4b ✅ shipped** (audio pipeline + `apps/flutter` loopback/two-device voice demo)
 5. **P5** NestJS rooms/grants wired
 6. **P6** TanStack web client — WebTransport spike (HTTP/3 endpoint crate) → AudioWorklet/WebCodecs/WebCrypto pipeline + Playwright E2E
 7. **P7** Hardening, metrics, loadgen, LiveKit comparison (includes web client)
