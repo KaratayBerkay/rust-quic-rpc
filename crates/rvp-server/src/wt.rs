@@ -155,5 +155,5 @@ async fn handle_connection(
     let WtControlWriter(send) = writer;
     let tx = Arc::new(WtTx::new(conn.clone(), send));
     let mut dgrams = WtDatagramSource(conn);
-    serve_joined(state, claims, tx, &mut dgrams).await
+    serve_joined(state, claims, tx, Box::new(reader), &mut dgrams).await
 }

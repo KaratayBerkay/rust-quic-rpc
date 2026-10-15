@@ -24,13 +24,16 @@ use tokio::time::timeout;
 use tracing::{debug, info, warn};
 
 pub mod limits;
+pub mod revocation;
 pub mod rooms;
 pub mod transport;
 pub mod wt;
 
 pub use limits::{ConnGuard, ConnLimiter, IngressLimiter, Limits};
+pub use revocation::Revocation;
 pub use rooms::{RoomError, RoomRegistry, MAX_ROOM_PARTICIPANTS};
 
+use revocation::wait_for_kick;
 use rooms::Room;
 use transport::{
     ControlReader, ControlWriter, DatagramSource, ParticipantTx, QuinnControlReader,
@@ -131,6 +134,8 @@ pub struct ServerState {
     pub limits: Limits,
     /// P7b per-IP/per-user connection counters (shared by both endpoints).
     pub conns: Arc<ConnLimiter>,
+    /// P7c grant revocation: jti denylist + live-session kick (plan decision 5).
+    pub revocation: Arc<Revocation>,
 }
 
 impl ServerState {
@@ -146,6 +151,7 @@ impl ServerState {
             verifier,
             limits,
             conns,
+            revocation: Arc::new(Revocation::new()),
         }
     }
 }
@@ -243,7 +249,7 @@ async fn handle_connection(
     let QuinnControlWriter(send) = writer;
     let tx = Arc::new(QuinnTx::new(conn.clone(), send));
     let mut dgrams = QuinnDatagramSource(conn);
-    serve_joined(state, claims, tx, &mut dgrams).await
+    serve_joined(state, claims, tx, Box::new(reader), &mut dgrams).await
 }
 
 /// Control handshake (plan §3.4 steps 2–4): Hello → verify grant → JoinRoom.
@@ -272,7 +278,21 @@ pub(crate) async fn drive_handshake(
                 return None;
             }
             match state.verifier.verify(&grant_jwt) {
-                Ok(claims) => claims,
+                Ok(claims) => {
+                    // P7c: a revoked jti must not reach a room (decision 5 —
+                    // in-memory denylist fed by the auth-service poll).
+                    if claims
+                        .jti
+                        .as_deref()
+                        .is_some_and(|jti| state.revocation.is_denied(jti))
+                    {
+                        instrument::handshake_failed("revoked");
+                        warn!(user = %claims.user_id, "revoked grant rejected");
+                        send_error(writer, error_code::FORBIDDEN, "grant revoked").await;
+                        return None;
+                    }
+                    claims
+                }
                 Err(e) => {
                     instrument::handshake_failed("unauthorized");
                     warn!(error = %e, "grant rejected");
@@ -324,10 +344,15 @@ pub(crate) async fn drive_handshake(
 
 /// Join the room, send Welcome, broadcast ParticipantJoined, fan out media
 /// until the datagram source ends, then tear down. Transport-agnostic.
+///
+/// P7c: after Welcome the client's control stream keeps being read in the
+/// background — `KeyUpdate { kid }` announces are relayed to the rest of the
+/// room — and a revoked grant jti closes the session while it runs.
 pub(crate) async fn serve_joined(
     state: Arc<ServerState>,
     claims: GrantClaims,
     tx: Arc<dyn ParticipantTx>,
+    reader: Box<dyn ControlReader>,
     datagrams: &mut dyn DatagramSource,
 ) -> Result<(), ServerError> {
     // P7b: per-user session cap (grant verified; slot held until we return).
@@ -401,9 +426,48 @@ pub(crate) async fn serve_joined(
     )
     .await;
 
-    let mut limiter = IngressLimiter::new(&state.limits);
-    let result = fanout_loop(datagrams, &room, participant_id, &mut limiter).await;
+    // P7c: keep reading this client's control stream for the rest of the
+    // session (relay KeyUpdate, ignore anything else). The handshake's 5s
+    // frame timeout must NOT apply here — idle control streams are normal.
+    let control_task = tokio::spawn(control_loop(reader, Arc::clone(&room), participant_id));
 
+    // P7c: watch for revocation of this session's grant jti. Harness/test
+    // grants have no jti and are never revoked.
+    let mut kick_rx = claims
+        .jti
+        .as_ref()
+        .map(|jti| state.revocation.register(jti.clone(), participant_id));
+
+    let mut limiter = IngressLimiter::new(&state.limits);
+    let result = tokio::select! {
+        res = fanout_loop(datagrams, &room, participant_id, &mut limiter) => res,
+        _ = async {
+            match kick_rx.as_mut() {
+                Some(rx) => wait_for_kick(rx).await,
+                // No jti ⇒ no revocation possible; only fanout can end us.
+                None => std::future::pending::<()>().await,
+            }
+        } => {
+            instrument::session_revoked();
+            warn!(%participant_id, user = %claims.user_id, "grant revoked; closing session");
+            tx.send_control(
+                ControlMessage::Error {
+                    code: error_code::FORBIDDEN,
+                    message: "grant revoked".to_owned(),
+                }
+                .encode(),
+            )
+            .await;
+            // Deliver the Error frame before this task drops the connection.
+            tx.finish_control().await;
+            Ok(())
+        }
+    };
+    control_task.abort();
+
+    if let Some(jti) = claims.jti.as_ref() {
+        state.revocation.unregister(jti, participant_id);
+    }
     if let Some(room) = state.registry.leave(&claims.room_id, participant_id) {
         broadcast_event(
             &room,
@@ -446,6 +510,35 @@ async fn broadcast_event(room: &Arc<Room>, except: u64, msg: ControlMessage) {
     let frame = msg.encode();
     for (_pid, tx) in targets {
         tx.send_control(frame.clone()).await;
+    }
+}
+
+/// P7c post-join control reader (runs as a task beside `fanout_loop`).
+///
+/// Relays `KeyUpdate { kid }` to every *other* member — the kid is unique
+/// per room so it identifies the sender's key (plan §3) — and ignores any
+/// other frame. A decode error or stream EOF ends the loop only; media
+/// (datagrams) continues until the transport says otherwise. No frame
+/// timeout: liveness after join is governed by the connection's 30s idle
+/// timeout + keepalives.
+async fn control_loop(mut reader: Box<dyn ControlReader>, room: Arc<Room>, participant_id: u64) {
+    loop {
+        match read_control_inner(reader.as_mut()).await {
+            Ok(ControlMessage::KeyUpdate { kid }) => {
+                instrument::key_update_relayed();
+                debug!(%participant_id, kid, "relaying KeyUpdate");
+                broadcast_event(&room, participant_id, ControlMessage::KeyUpdate { kid }).await;
+            }
+            Ok(other) => {
+                // Clients send nothing else after JoinRoom today; tolerate
+                // (and log) forward-compat frames instead of tearing down.
+                debug!(%participant_id, frame = ?other, "ignoring client control frame");
+            }
+            Err(_) => {
+                debug!(%participant_id, "control stream ended");
+                break;
+            }
+        }
     }
 }
 

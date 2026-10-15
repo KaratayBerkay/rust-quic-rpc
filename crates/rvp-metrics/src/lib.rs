@@ -189,4 +189,14 @@ pub mod instrument {
     pub fn retry_sent() {
         metrics::counter!("rvp_quic_retries_total").increment(1);
     }
+
+    /// A `KeyUpdate { kid }` announce was relayed to the rest of the room (P7c).
+    pub fn key_update_relayed() {
+        metrics::counter!("rvp_key_updates_total").increment(1);
+    }
+
+    /// A joined session was closed because its grant jti was revoked (P7c).
+    pub fn session_revoked() {
+        metrics::counter!("rvp_sessions_revoked_total").increment(1);
+    }
 }
