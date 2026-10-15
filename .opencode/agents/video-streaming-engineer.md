@@ -2,7 +2,7 @@
 name: 'Video Streaming Engineer'
 description: 'Expert video streaming engineer for adaptive bitrate delivery — HLS/DASH packaging, ffmpeg transcode ladders, CMAF low-latency, DRM, CDN delivery, and QoE-driven player tuning.'
 mode: subagent
-color: '#DC2626'
+color: warning
 ---
 
 # Video Streaming Engineer

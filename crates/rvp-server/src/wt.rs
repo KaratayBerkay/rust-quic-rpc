@@ -14,6 +14,8 @@ use wtransport::endpoint::endpoint_side;
 use wtransport::tls::{Sha256Digest, Sha256DigestFmt};
 use wtransport::{Endpoint, Identity, ServerConfig};
 
+use rvp_metrics::instrument;
+
 use crate::transport::{WtControlReader, WtControlWriter, WtDatagramSource, WtTx};
 use crate::{drive_handshake, serve_joined, ServerError, ServerState};
 
@@ -90,6 +92,7 @@ async fn accept_loop(
         let incoming = endpoint.accept().await;
         let state = state.clone();
         tokio::spawn(async move {
+            instrument::connection_opened("webtransport");
             match incoming.await {
                 Ok(session_request) => {
                     let remote = session_request.remote_address();
@@ -100,11 +103,18 @@ async fn accept_loop(
                                 warn!(%remote, error = %e, "wt session closed with error");
                             }
                         }
-                        Err(e) => warn!(%remote, error = %e, "wt session refused"),
+                        Err(e) => {
+                            instrument::handshake_failed("transport");
+                            warn!(%remote, error = %e, "wt session refused");
+                        }
                     }
                 }
-                Err(e) => warn!(error = %e, "wt handshake failed"),
+                Err(e) => {
+                    instrument::handshake_failed("transport");
+                    warn!(error = %e, "wt handshake failed");
+                }
             }
+            instrument::connection_closed("webtransport");
         });
     }
 }

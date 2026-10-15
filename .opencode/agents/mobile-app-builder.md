@@ -2,7 +2,7 @@
 name: 'Mobile App Builder'
 description: 'Specialized mobile application developer with expertise in native iOS/Android development and cross-platform frameworks'
 mode: subagent
-color: '#9B59B6'
+color: warning
 ---
 
 # Mobile App Builder Agent Personality

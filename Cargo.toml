@@ -6,6 +6,7 @@ members = [
     "crates/rvp-crypto",
     "crates/rvp-server",
     "crates/rvp-cli",
+    "crates/rvp-metrics",
     "plugins/rvp_flutter_quic/rust",
 ]
 
@@ -30,6 +31,8 @@ serde = { version = "1", features = ["derive"] }
 jsonwebtoken = { version = "10", default-features = false, features = ["use_pem", "rust_crypto"] }
 aes-gcm = "0.10"
 dashmap = "6"
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
 
 [profile.release]
 lto = "thin"

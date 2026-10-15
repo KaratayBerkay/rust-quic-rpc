@@ -23,6 +23,7 @@ thiserror = { workspace = true }
 dashmap = { workspace = true }
 rvp-proto = { path = "../rvp-proto" }
 rvp-auth = { path = "../rvp-auth" }
+rvp-metrics = { path = "../rvp-metrics" }
 wtransport = "0.7"
 
 [dev-dependencies]

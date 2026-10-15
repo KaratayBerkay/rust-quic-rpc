@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use dashmap::DashMap;
+use rvp_metrics::instrument;
 use rvp_proto::control::RosterEntry;
 use tracing::debug;
 
@@ -116,7 +117,10 @@ impl RoomRegistry {
         let room = self
             .rooms
             .entry(room_id.to_owned())
-            .or_insert_with(|| Arc::new(Room::new()))
+            .or_insert_with(|| {
+                instrument::room_created();
+                Arc::new(Room::new())
+            })
             .clone();
         let roster = room
             .insert(
@@ -127,6 +131,7 @@ impl RoomRegistry {
                 },
             )
             .map_err(|_| RoomError::Full)?;
+        instrument::participant_joined();
         Ok((room, roster))
     }
 
@@ -135,8 +140,10 @@ impl RoomRegistry {
     pub fn leave(&self, room_id: &str, participant_id: u64) -> Option<Arc<Room>> {
         let room = self.rooms.get(room_id)?.clone();
         room.remove(participant_id);
+        instrument::participant_left();
         if room.is_empty() {
             self.rooms.remove(room_id);
+            instrument::room_garbage_collected();
             debug!(room_id, "room gc (empty)");
         }
         Some(room)

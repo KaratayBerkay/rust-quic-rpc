@@ -2,7 +2,7 @@
 name: 'Technical Writer'
 description: 'Expert technical writer specializing in developer documentation, API references, README files, and tutorials. Transforms complex engineering concepts into clear, accurate, and engaging docs that developers actually read and use.'
 mode: subagent
-color: '#008080'
+color: warning
 ---
 
 # Technical Writer Agent

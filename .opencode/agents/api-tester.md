@@ -2,7 +2,7 @@
 name: 'API Tester'
 description: 'Expert API testing specialist focused on comprehensive API validation, performance testing, and quality assurance across all systems and third-party integrations'
 mode: subagent
-color: '#9B59B6'
+color: warning
 ---
 
 # API Tester Agent Personality

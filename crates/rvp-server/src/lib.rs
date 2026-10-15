@@ -11,11 +11,12 @@
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use quinn::{Endpoint, ServerConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rvp_auth::{GrantClaims, Verifier};
+use rvp_metrics::instrument;
 use rvp_proto::control::{
     error_code, ControlError, ControlMessage, MAX_FRAME_LEN, PROTOCOL_VERSION,
 };
@@ -161,6 +162,7 @@ async fn accept_loop(endpoint: Endpoint, state: Arc<ServerState>) -> Result<(), 
     while let Some(connecting) = endpoint.accept().await {
         let state = state.clone();
         tokio::spawn(async move {
+            instrument::connection_opened("quic");
             match connecting.await {
                 Ok(conn) => {
                     let remote = conn.remote_address();
@@ -169,8 +171,12 @@ async fn accept_loop(endpoint: Endpoint, state: Arc<ServerState>) -> Result<(), 
                         warn!(%remote, error = %e, "connection closed with error");
                     }
                 }
-                Err(e) => warn!(error = %e, "handshake failed"),
+                Err(e) => {
+                    instrument::handshake_failed("transport");
+                    warn!(error = %e, "handshake failed");
+                }
             }
+            instrument::connection_closed("quic");
         });
     }
     Ok(())
@@ -205,6 +211,7 @@ pub(crate) async fn drive_handshake(
     reader: &mut dyn ControlReader,
     writer: &mut dyn ControlWriter,
 ) -> Option<GrantClaims> {
+    let started = Instant::now();
     // --- Hello: verify grant (plan §3.4 step 3) ---
     let claims = match read_control(reader).await {
         Ok(ControlMessage::Hello {
@@ -212,6 +219,7 @@ pub(crate) async fn drive_handshake(
             grant_jwt,
         }) => {
             if protocol_version != PROTOCOL_VERSION {
+                instrument::handshake_failed("version");
                 send_error(
                     writer,
                     error_code::VERSION_UNSUPPORTED,
@@ -223,6 +231,7 @@ pub(crate) async fn drive_handshake(
             match state.verifier.verify(&grant_jwt) {
                 Ok(claims) => claims,
                 Err(e) => {
+                    instrument::handshake_failed("unauthorized");
                     warn!(error = %e, "grant rejected");
                     send_error(writer, error_code::UNAUTHORIZED, &e.to_string()).await;
                     return None;
@@ -230,6 +239,7 @@ pub(crate) async fn drive_handshake(
             }
         }
         Ok(other) => {
+            instrument::handshake_failed("bad_request");
             send_error(
                 writer,
                 error_code::BAD_REQUEST,
@@ -239,6 +249,7 @@ pub(crate) async fn drive_handshake(
             return None;
         }
         Err(e) => {
+            instrument::handshake_failed("bad_request");
             send_error(writer, error_code::BAD_REQUEST, &e.to_string()).await;
             return None;
         }
@@ -246,8 +257,12 @@ pub(crate) async fn drive_handshake(
 
     // --- JoinRoom (plan §3.4 step 4) ---
     match read_control(reader).await {
-        Ok(ControlMessage::JoinRoom) => Some(claims),
+        Ok(ControlMessage::JoinRoom) => {
+            instrument::handshake_ok(started.elapsed().as_secs_f64());
+            Some(claims)
+        }
         Ok(other) => {
+            instrument::handshake_failed("bad_request");
             send_error(
                 writer,
                 error_code::BAD_REQUEST,
@@ -257,6 +272,7 @@ pub(crate) async fn drive_handshake(
             None
         }
         Err(e) => {
+            instrument::handshake_failed("bad_request");
             send_error(writer, error_code::BAD_REQUEST, &e.to_string()).await;
             None
         }
@@ -280,6 +296,7 @@ pub(crate) async fn serve_joined(
     ) {
         Ok(joined) => joined,
         Err(RoomError::Full) => {
+            instrument::room_full();
             tx.send_control(
                 ControlMessage::Error {
                     code: error_code::ROOM_FULL,
@@ -340,6 +357,7 @@ async fn fanout_loop(
     while let Some(dgram) = datagrams.recv_datagram().await {
         let targets = room.fanout_targets(from);
         debug!(len = dgram.len(), peers = targets.len(), "fanout datagram");
+        instrument::fanout_datagram(dgram.len(), targets.len());
         for peer in targets {
             // Congestion drops the datagram — correct for live audio (plan §4).
             peer.send_datagram(dgram.clone());
@@ -381,6 +399,7 @@ async fn read_control_inner(recv: &mut dyn ControlReader) -> Result<ControlMessa
 }
 
 async fn send_error(send: &mut dyn ControlWriter, code: u16, message: &str) {
+    instrument::control_error(code);
     let frame = ControlMessage::Error {
         code,
         message: message.to_owned(),

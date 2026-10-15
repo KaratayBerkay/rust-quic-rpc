@@ -29,6 +29,9 @@ struct Args {
     /// WebTransport/HTTP3 listen address (same JWT grants + rooms as --listen).
     #[arg(long)]
     wt_listen: Option<SocketAddr>,
+    /// Prometheus /metrics listen address (plan §9, P7a).
+    #[arg(long)]
+    metrics_listen: Option<SocketAddr>,
     /// NestJS Ed25519 media-grant public key (PEM, SPKI).
     #[arg(long, group = "auth_key")]
     jwt_public_key: Option<PathBuf>,
@@ -47,6 +50,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let args = Args::parse();
+    let metrics = match args.metrics_listen {
+        Some(addr) => Some(rvp_metrics::install(addr).await?),
+        None => None,
+    };
     let verifier = Arc::new(match (&args.jwt_public_key, &args.nest_jwks) {
         (Some(pem_path), _) => {
             let pem = std::fs::read(pem_path)?;
@@ -92,6 +99,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         wt.shutdown().await;
     }
     server.shutdown().await;
+    if let Some(metrics) = metrics {
+        metrics.shutdown().await;
+    }
     Ok(())
 }
 

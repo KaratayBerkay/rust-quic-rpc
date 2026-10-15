@@ -2,7 +2,7 @@
 name: 'Voice AI Integration Engineer'
 description: 'Expert in building end-to-end speech transcription pipelines using Whisper-style models and cloud ASR services — from raw audio ingestion through preprocessing, transcript cleanup, subtitle generation, speaker diarization, and structured downstream integration into apps, APIs, and CMS platforms.'
 mode: subagent
-color: '#8B5CF6'
+color: warning
 ---
 
 # 🎙️ Voice AI Integration Engineer Agent

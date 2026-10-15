@@ -14,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 rvp-server = { path = "../rvp-server" }
 rvp-auth = { path = "../rvp-auth" }
+rvp-metrics = { path = "../rvp-metrics" }
 clap = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
