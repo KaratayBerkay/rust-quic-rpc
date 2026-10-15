@@ -39,11 +39,34 @@ jobs:
       - run: npx commitlint --from ${{ github.event.pull_request.base.sha }} --to ${{ github.event.pull_request.head.sha }} --verbose
 
   # ---- Phase gates: activate automatically when code lands ----
+  # NOTE: hashFiles() is only allowed in step contexts, not job-level `if`,
+  # so a detect job computes the flags and dependent jobs read them via
+  # `needs` (which IS allowed at job level).
+
+  changes:
+    name: Detect areas
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.detect.outputs.rust }}
+      flutter_app: ${{ steps.detect.outputs.flutter_app }}
+      flutter_plugin: ${{ steps.detect.outputs.flutter_plugin }}
+      web: ${{ steps.detect.outputs.web }}
+      nest: ${{ steps.detect.outputs.nest }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: detect
+        run: |
+          echo "rust=${{ hashFiles('crates/**/Cargo.toml', 'Cargo.toml', 'Cargo.lock', 'plugins/**/rust/**') != '' }}" >> "$GITHUB_OUTPUT"
+          echo "flutter_app=${{ hashFiles('apps/flutter/pubspec.yaml') != '' }}" >> "$GITHUB_OUTPUT"
+          echo "flutter_plugin=${{ hashFiles('plugins/rvp_flutter_quic/**') != '' }}" >> "$GITHUB_OUTPUT"
+          echo "web=${{ hashFiles('apps/web/package.json') != '' }}" >> "$GITHUB_OUTPUT"
+          echo "nest=${{ hashFiles('services/nest/package.json') != '' }}" >> "$GITHUB_OUTPUT"
 
   rust:
     name: Rust (crates)
     runs-on: ubuntu-latest
-    if: ${{ hashFiles('crates/**/Cargo.toml', 'Cargo.toml') != '' }}
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -57,7 +80,8 @@ jobs:
   flutter:
     name: Flutter (apps/flutter)
     runs-on: ubuntu-latest
-    if: ${{ hashFiles('apps/flutter/pubspec.yaml') != '' }}
+    needs: changes
+    if: needs.changes.outputs.flutter_app == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
@@ -73,7 +97,8 @@ jobs:
   flutter-plugin:
     name: Flutter plugin (rvp_flutter_quic)
     runs-on: ubuntu-latest
-    if: ${{ hashFiles('plugins/rvp_flutter_quic/pubspec.yaml') != '' }}
+    needs: changes
+    if: needs.changes.outputs.flutter_plugin == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -99,11 +124,11 @@ jobs:
       - run: flutter build apk --debug
         working-directory: plugins/rvp_flutter_quic/example
 
-
   web:
     name: Web (apps/web)
     runs-on: ubuntu-latest
-    if: ${{ hashFiles('apps/web/package.json') != '' }}
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -121,7 +146,8 @@ jobs:
   nest:
     name: NestJS (services/nest)
     runs-on: ubuntu-latest
-    if: ${{ hashFiles('services/nest/package.json') != '' }}
+    needs: changes
+    if: needs.changes.outputs.nest == 'true'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

@@ -357,7 +357,7 @@ If the product goal is "standard video conferencing tomorrow", **LiveKit is the 
 Repo: `https://github.com/KaratayBerkay/rust-quic-rpc` · Branch: `main` · Hooks: husky · CI: GitHub Actions.
 
 - **One PR per phase.** Branch naming: `phase/P<N>-<slug>` (e.g. `phase/P0-design`, `phase/P1-quic-echo`, `phase/P2-auth`). `main` is protected by convention: no direct pushes of phase work.
-- **PR gate:** CI green (docs lint + commitlint now; per-phase jobs activate when code lands: `crates/**` → Rust fmt/clippy/test, `apps/flutter` → analyze/test, `apps/web` → lint/build, `services/nest` → lint/test/build), human review, squash-merge with conventional title.
+- **PR gate:** CI green (docs lint + commitlint always; a detect job computes per-area flags with step-level `hashFiles` — job-level `if` may not call it — and gates the per-phase jobs: `crates/**` + `plugins/**/rust/**` → Rust fmt/clippy/test, `apps/flutter` → analyze/test, `plugins/rvp_flutter_quic/**` → analyze/test + Android APK compile-check, `apps/web` → lint/build, `services/nest` → lint/test/build), human review, squash-merge with conventional title.
 - **Husky (local):** `pre-commit` = markdownlint on docs; `commit-msg` = commitlint (`config-conventional`). Bypass only via explicit `--no-verify` with review note.
 - **Commit/PR title convention:** `type(scope): summary` — scopes: `docs`, `proto`, `auth`, `server`, `flutter`, `web`, `nest`, `ci`.
 
