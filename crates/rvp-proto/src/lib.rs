@@ -217,4 +217,33 @@ mod tests {
         };
         assert_eq!(MediaHeader::decode(&h.encode()).unwrap().sequence, u32::MAX);
     }
+
+    /// Exact wire bytes — pinned here and in the TypeScript codec tests
+    /// (`apps/web/src/lib/media.test.ts`), so both sides cannot drift.
+    #[test]
+    fn header_wire_vector() {
+        let h = MediaHeader {
+            version: VERSION,
+            kind: 0,
+            flags: 0b0000_0001,
+            pt: PT_OPUS_ENC,
+            kid: 7,
+            sequence: 0xDEAD_BEEF,
+            timestamp: 0x0102_0304,
+            frame_duration_ms: 20,
+            reserved: [9, 8, 7],
+        };
+        let hex: String = h.encode().iter().map(|b| format!("{b:02x}")).collect();
+        assert_eq!(hex, "10010107deadbeef0102030414090807");
+    }
+
+    #[test]
+    fn default_header_wire_vector() {
+        let hex: String = MediaHeader::default()
+            .encode()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(hex, "10000000000000000000000014000000");
+    }
 }

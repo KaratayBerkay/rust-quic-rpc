@@ -147,6 +147,13 @@ jobs:
         working-directory: apps/web
       - run: npm run build --if-present
         working-directory: apps/web
+      # Playwright smoke E2E against the production build (vite preview).
+      # The full-stack voice E2E (e2e/voice.spec.ts) is gated on RVP_E2E=1
+      # and skipped here until the live Nest+rvp-cli job is added.
+      - run: npx playwright install --with-deps chromium
+        working-directory: apps/web
+      - run: npm run test:e2e
+        working-directory: apps/web
 
   nest:
     name: NestJS (services/nest)
