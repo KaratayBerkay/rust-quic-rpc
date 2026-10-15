@@ -110,7 +110,7 @@ crates/
   rvp-cli/       # binary: config load, run server
   rvp-loadgen/   # Phase 6 load tool (pure-Rust quinn client)
 apps/
-  web/           # Vite SPA web client (TanStack Router/Query; P6a shell, P6b audio)
+  web/           # Vite SPA web client (TanStack Router/Query; P6a shell + P6b audio pipeline)
   flutter/       # Flutter mobile client app (P4b+)
 plugins/
   rvp_flutter_quic/  # in-house QUIC plugin, flutter_rust_bridge over quinn (P4a)
@@ -193,8 +193,8 @@ Second real client: a browser **phone-call app** (login, room list, roster, mute
 
 - **WebTransport over HTTP/3** — the browser's QUIC: unreliable DATAGRAMs carry RVP media; one bidirectional stream carries the RVP control protocol. Framing mirrors `rvp-proto` (TS port in `apps/web/src/lib/control.ts`, hex vectors pinned against Rust).
 - **Server change (shipped P6a):** `rvp-server` exposes a WebTransport (HTTP/3) endpoint **alongside** the raw-QUIC endpoint (`wtransport`) — same room registry, same JWT checks, same fanout, same datagram forward path (`crates/rvp-server/src/wt.rs`, transport-agnostic `ParticipantTx` trait). `rvp-cli --wt-listen <addr>` enables it; cert SHA-256 is logged for browser `serverCertificateHashes`.
-- **Opus via WebCodecs** (`AudioEncoder`/`AudioDecoder`) — 20 ms frames; **AudioWorklet** captures/plays 48 kHz mono PCM. *(P6b)*
-- **Pairwise crypto via WebCrypto** AES-GCM — same NestJS-delivered per-pair keys and `kid` rotation as Flutter (ADR-004). Pairwise cost applies too: N−1 datagrams per 20 ms frame per publisher. *(P6b)*
+- **Opus via WebCodecs** (`AudioEncoder`/`AudioDecoder`) — 20 ms frames; **AudioWorklet** captures/plays 48 kHz mono PCM. *(shipped P6b — `apps/web/src/audio/browser-audio.ts`, `worklet-processor.ts`)*
+- **Pairwise crypto via WebCrypto** AES-GCM — same NestJS-delivered per-pair keys and `kid` rotation as Flutter (ADR-004). Pairwise cost applies too: N−1 datagrams per 20 ms frame per publisher. *(shipped P6b — `apps/web/src/lib/crypto.ts` with Rust-anchored test vector)*
 - **Fallback (open decision 8):** WebSocket + same RVP frames if WebTransport is unavailable — degraded (no QUIC CC), not v1-blocking.
 
 ```text
@@ -284,7 +284,7 @@ Deliverables (docs + decisions, no production code):
 3. **P3** Rooms + SFU forward (two+ Rust clients talking; server forwards ciphertext opaquely)
 4. **P4** In-house Flutter plugin (`rvp_flutter_quic`) → capture/Opus/crypto/jitter/playback (no `flutter_quic` spike) — split: **P4a** plugin transport (`flutter_rust_bridge` over quinn: connect, control bi-stream, datagrams) → **P4b** audio pipeline (PCM capture → `opus_codec_dart` → pairwise crypto → jitter buffer → playback) + E2E voice demo — **P4a ✅ shipped; P4b ✅ shipped** (audio pipeline + `apps/flutter` loopback/two-device voice demo)
 5. **P5** NestJS rooms/grants wired — **✅ shipped** (`services/nest`: login/rooms/grants/JWKS on Postgres; Rust JWKS verification + rotation in `rvp-cli`)
-6. **P6** Web client — split: **P6a** WebTransport/HTTP3 endpoint + web client shell (control handshake, datagram loopback, TS codec with Rust-anchored vectors) → **P6b** audio pipeline (AudioWorklet/WebCodecs/WebCrypto) + Playwright voice E2E — **P6a ✅ shipped** (`rvp-server` WT endpoint via `wtransport` sharing ServerState/registry/fanout; `apps/web` Vite SPA with login/rooms/in-call handshake, roster, datagram counters; cross-endpoint quinn↔WT fanout test)
+6. **P6** Web client — split: **P6a** WebTransport/HTTP3 endpoint + web client shell (control handshake, datagram loopback, TS codec with Rust-anchored vectors) → **P6b** audio pipeline (AudioWorklet/WebCodecs/WebCrypto) + Playwright voice E2E — **P6a ✅ shipped** (`rvp-server` WT endpoint via `wtransport` sharing ServerState/registry/fanout; `apps/web` Vite SPA with login/rooms/in-call handshake, roster, datagram counters; cross-endpoint quinn↔WT fanout test) — **P6b ✅ shipped** (TS media/crypto/jitter/voice modules with Rust-anchored vectors; AudioWorklet 48 kHz capture/playback + WebCodecs Opus encode/decode; pairwise AES-GCM seal fanout N−1 per frame; in-call mute + voice stats UI; Playwright smoke E2E green, full-stack voice E2E gated on `RVP_E2E=1`)
 7. **P7** Hardening, metrics, loadgen, LiveKit comparison (includes web client)
 8. **P8** Multi-instance routing (Redis room directory)
 

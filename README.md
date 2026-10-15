@@ -2,7 +2,7 @@
 
 Rust + QUIC real-time **voice** server: a DATAGRAM SFU with pairwise end-to-end-encrypted Opus, EdDSA JWT auth via a NestJS control plane, and Flutter + TanStack web clients.
 
-> **Status: P1–P6a shipped** — Rust QUIC SFU (rooms, opaque fanout, JWT auth) + Flutter plugin with full voice pipeline and demo (`apps/flutter`) + NestJS control plane (`services/nest`: login, rooms, media grants, JWKS on Postgres) + WebTransport endpoint and Vite web client shell (`apps/web`, control handshake + datagram loopback; audio pipeline in P6b). Design plan: [`docs/plan.md`](docs/plan.md).
+> **Status: P1–P6 shipped** — Rust QUIC SFU (rooms, opaque fanout, JWT auth) + Flutter plugin with full voice pipeline and demo (`apps/flutter`) + NestJS control plane (`services/nest`: login, rooms, media grants, JWKS on Postgres) + WebTransport endpoint and Vite web client (`apps/web`: control handshake, pairwise AES-GCM, AudioWorklet/WebCodecs Opus, Playwright E2E). Design plan: [`docs/plan.md`](docs/plan.md).
 
 ## Why not just LiveKit?
 
@@ -16,7 +16,7 @@ Documented honestly in [`docs/plan.md` §12](docs/plan.md): LiveKit is the right
 | P1–P3 | Rust QUIC server: echo → auth/crypto → SFU rooms ✅ |
 | P4 | Flutter plugin + audio pipeline + voice demo ✅ |
 | P5 | NestJS control plane (login/rooms/grants/JWKS on Postgres) ✅ |
-| P6 | Web client — **P6a** WebTransport endpoint + Vite shell ✅; **P6b** audio pipeline + Playwright E2E pending |
+| P6 | Web client — **P6a** WebTransport endpoint + Vite shell ✅; **P6b** audio pipeline + Playwright E2E ✅ |
 | P7–P8 | Hardening, loadgen vs LiveKit, multi-instance |
 | P9–P12 | Deferred post-v1: TURN fallback, speaker detection, video, recording |
 

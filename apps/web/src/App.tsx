@@ -11,7 +11,7 @@ import {
   RouterProvider,
   useNavigate,
 } from "@tanstack/react-router";
-import { useState, useSyncExternalStore } from "react";
+import { useState, useRef, useSyncExternalStore } from "react";
 import {
   addMember,
   createGrant,
@@ -21,7 +21,18 @@ import {
   type GrantResponse,
   type SessionResponse,
 } from "./lib/api";
+import { keyFromHex, PairwiseKey } from "./lib/crypto";
+import { VoicePipeline } from "./lib/voice";
 import { connectWt, type WtSession } from "./lib/wt";
+import {
+  createWebCodecsOpusDecoder,
+  createWebCodecsOpusEncoder,
+  loadWorklets,
+  startCapture,
+  startPlayback,
+  type CaptureHandle,
+  type PlaybackHandle,
+} from "./audio/browser-audio";
 
 // --- session store (localStorage-backed; fine for the P6a demo shell) ------
 
@@ -302,8 +313,15 @@ function RoomPage() {
     Array<{ participantId: number; userId: string }>
   >([]);
   const [events, setEvents] = useState<string[]>([]);
-  const [rxCount, setRxCount] = useState(0);
-  const [txCount, setTxCount] = useState(0);
+  const [voiceStats, setVoiceStats] = useState({
+    framesSent: 0,
+    datagramsSent: 0,
+    datagramsReceived: 0,
+    decryptFailures: 0,
+    missingKeyDropped: 0,
+  });
+  const [muted, setMuted] = useState(false);
+  const [audioActive, setAudioActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -315,12 +333,20 @@ function RoomPage() {
     );
   }
 
+  // Refs hold the live audio objects outside React render cycles.
+  const voiceRef = useRef<VoicePipeline | null>(null);
+  const captureRef = useRef<CaptureHandle | null>(null);
+  const playbackRef = useRef<PlaybackHandle | null>(null);
+  const contextRef = useRef<AudioContext | null>(null);
+  const unsubRef = useRef<(() => void) | null>(null);
+
   const onConnect = async () => {
     setBusy(true);
     setError(null);
     try {
       const g = await createGrant(nestUrl(), session.accessToken, roomId);
       setGrant(g);
+
       const s = await connectWt({
         url: wtUrl(),
         certHashHex: certHash(),
@@ -328,6 +354,26 @@ function RoomPage() {
       });
       setSession_(s);
       setRoster(s.roster);
+
+      // Build the pairwise key table from the grant (kid is room-wide unique).
+      const pipeline = new VoicePipeline({
+        sendDatagram: (d) => s.sendDatagram(d),
+        createEncoder: createWebCodecsOpusEncoder,
+        createDecoder: createWebCodecsOpusDecoder,
+      });
+      for (const pair of g.pairs) {
+        pipeline.addPeer({
+          userId: pair.peer,
+          kid: pair.kid,
+          key: new PairwiseKey(keyFromHex(pair.key)),
+        });
+      }
+      pipeline.onPlaybackPcm = (frame) => {
+        playbackRef.current?.enqueue(frame);
+      };
+      voiceRef.current = pipeline;
+
+      // Subscribe to control events (roster) and media datagrams.
       s.onControl((msg) => {
         setEvents((prev) => [...prev, JSON.stringify(msg)]);
         if (msg.type === "participantJoined") {
@@ -336,13 +382,47 @@ function RoomPage() {
               ? prev
               : [...prev, { participantId: msg.participantId, userId: msg.userId }],
           );
+          // Register the new peer's pairwise key if present in the grant.
+          const pair = g.pairs.find((p) => p.peer === msg.userId);
+          if (pair) {
+            pipeline.addPeer({
+              userId: msg.userId,
+              kid: pair.kid,
+              key: new PairwiseKey(keyFromHex(pair.key)),
+            });
+          }
         } else if (msg.type === "participantLeft") {
           setRoster((prev) =>
             prev.filter((r) => r.participantId !== msg.participantId),
           );
         }
       });
-      s.onData(() => setRxCount((c) => c + 1));
+      s.onData((payload) => pipeline.receiveDatagram(payload));
+
+      // Playout ticker.
+      const unsub = pipeline.start();
+      unsubRef.current = unsub;
+
+      // Kick off audio (requires a user gesture — this is one).
+      const ctx = new AudioContext({ sampleRate: 48000 });
+      contextRef.current = ctx;
+      await loadWorklets(ctx);
+      const playback = startPlayback(ctx);
+      playbackRef.current = playback;
+      const capture = await startCapture(ctx, (frame) => {
+        void pipeline.pushPcm(frame);
+      });
+      captureRef.current = capture;
+      setAudioActive(true);
+
+      // Periodic stats refresh.
+      const interval = setInterval(() => {
+        setVoiceStats({ ...pipeline.stats });
+      }, 500);
+      unsubRef.current = () => {
+        unsub();
+        clearInterval(interval);
+      };
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -350,11 +430,21 @@ function RoomPage() {
     }
   };
 
-  const onPing = () => {
-    if (!session_) return;
-    // 12-byte dummy media frame; real audio pipeline lands in P6b.
-    session_.sendDatagram(new Uint8Array([0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]));
-    setTxCount((c) => c + 1);
+  const onToggleMute = () => {
+    const next = !muted;
+    setMuted(next);
+    voiceRef.current?.setMuted(next);
+  };
+
+  const onLeave = () => {
+    unsubRef.current?.();
+    captureRef.current?.stop();
+    playbackRef.current?.stop();
+    voiceRef.current?.dispose();
+    void contextRef.current?.close();
+    session_?.close();
+    setSession_(null);
+    setAudioActive(false);
   };
 
   return (
@@ -363,7 +453,7 @@ function RoomPage() {
       {!session_ ? (
         <>
           <button type="button" disabled={busy} onClick={() => void onConnect()}>
-            {busy ? "Connecting…" : "Fetch grant + connect WebTransport"}
+            {busy ? "Connecting…" : "Fetch grant + connect + join voice"}
           </button>
         </>
       ) : (
@@ -382,23 +472,21 @@ function RoomPage() {
             {roster.length === 0 && <li>(empty)</li>}
           </ul>
           <p>
-            <button type="button" onClick={onPing}>
-              Send test datagram
+            <button type="button" onClick={onToggleMute}>
+              {muted ? "Unmute" : "Mute"}
             </button>{" "}
-            tx={txCount} rx={rxCount}
+            {audioActive && <span>🎤 audio active</span>}
           </p>
+          <h3>Voice stats</h3>
+          <pre style={{ background: "#f4f4f4", padding: 8, overflowX: "auto" }}>
+            {JSON.stringify(voiceStats, null, 2)}
+          </pre>
           <h3>Control events</h3>
           <pre style={{ background: "#f4f4f4", padding: 8, overflowX: "auto" }}>
             {events.join("\n") || "(none)"}
           </pre>
           <p>
-            <button
-              type="button"
-              onClick={() => {
-                session_.close();
-                setSession_(null);
-              }}
-            >
+            <button type="button" onClick={onLeave}>
               Leave room
             </button>
           </p>
