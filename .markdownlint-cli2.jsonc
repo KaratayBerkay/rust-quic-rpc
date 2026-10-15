@@ -1,4 +1,5 @@
 {
+  "ignores": ["session-*.md", "**/node_modules/**"],
   "config": {
     "default": true,
     "MD013": false,
