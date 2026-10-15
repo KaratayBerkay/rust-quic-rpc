@@ -19,6 +19,7 @@ const int _typeJoinRoom = 2;
 const int _typeWelcome = 3;
 const int _typeParticipantJoined = 4;
 const int _typeParticipantLeft = 5;
+const int _typeKeyUpdate = 6;
 const int _typeError = 15;
 
 /// Error codes carried by [ControlErrorMessage] (mirror of `error_code`).
@@ -93,6 +94,12 @@ final class ParticipantLeftMessage extends ControlMessage {
   final int participantId;
 }
 
+/// `KeyUpdate { kid }` — client → server announce; relayed to other members.
+final class KeyUpdateMessage extends ControlMessage {
+  const KeyUpdateMessage({required this.kid});
+  final int kid;
+}
+
 /// Server-side error (also sent instead of [WelcomeMessage] on rejection).
 final class ControlErrorMessage extends ControlMessage {
   const ControlErrorMessage({required this.code, required this.message});
@@ -115,6 +122,15 @@ Uint8List encodeHello(String grantJwt) {
 Uint8List encodeJoinRoom() {
   final body = Uint8List(2);
   ByteData.sublistView(body).setUint16(0, _typeJoinRoom);
+  return _frame(body);
+}
+
+/// Encode `KeyUpdate` as a complete frame (prefix included).
+Uint8List encodeKeyUpdate(int kid) {
+  final body = Uint8List(3);
+  final bd = ByteData.sublistView(body);
+  bd.setUint16(0, _typeKeyUpdate);
+  body[2] = kid;
   return _frame(body);
 }
 
@@ -196,6 +212,9 @@ ControlMessage decodeControlBody(Uint8List body) {
     case _typeParticipantLeft:
       if (body.length < 10) throw ControlCodecException('bad ParticipantLeft');
       return ParticipantLeftMessage(participantId: _u64(bd, 2));
+    case _typeKeyUpdate:
+      if (body.length < 3) throw ControlCodecException('bad KeyUpdate');
+      return KeyUpdateMessage(kid: body[2]);
     case _typeError:
       if (body.length < 4) throw ControlCodecException('bad Error');
       return ControlErrorMessage(

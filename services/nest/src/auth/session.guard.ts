@@ -14,12 +14,14 @@ export interface AuthedRequest extends Request {
   jti: string;
 }
 
-const PUBLIC_PATHS = new Set(['/auth/login', '/auth/jwks']);
+const PUBLIC_PATHS = new Set(['/auth/login', '/auth/jwks', '/auth/revoked']);
 
 /**
- * Bearer-session guard for every endpoint except POST /auth/login and
- * GET /auth/jwks. Verifies the long-lived session JWT (iss=nest-api,
- * aud=rvp-api) signed by [KeysService] and attaches `userId`/`jti`.
+ * Bearer-session guard for every endpoint except POST /auth/login,
+ * GET /auth/jwks and GET /auth/revoked (all machine-to-machine endpoints
+ * consumed by rvp-cli without a user session). Verifies the long-lived
+ * session JWT (iss=nest-api, aud=rvp-api) signed by [KeysService] and
+ * attaches `userId`/`jti`.
  */
 @Injectable()
 export class SessionGuard implements CanActivate {

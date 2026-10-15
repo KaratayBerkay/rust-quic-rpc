@@ -10,6 +10,7 @@ import { SessionGuard } from './auth/session.guard';
 import { RoomsController } from './rooms/rooms.controller';
 import { RoomsService } from './rooms/rooms.service';
 import { GrantsController } from './grants/grants.controller';
+import { GrantIssuesService } from './grants/grant-issues.service';
 
 @Module({
   controllers: [AuthController, RoomsController, GrantsController],
@@ -30,6 +31,7 @@ import { GrantsController } from './grants/grants.controller';
       inject: [APP_CONFIG],
     },
     RoomsService,
+    GrantIssuesService,
     { provide: APP_GUARD, useClass: SessionGuard },
   ],
 })

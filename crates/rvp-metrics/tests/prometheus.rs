@@ -28,6 +28,8 @@ async fn p7a_metrics_render_and_serve() {
     rvp_metrics::instrument::connection_rejected("ip_cap");
     rvp_metrics::instrument::connection_rejected("user_cap");
     rvp_metrics::instrument::retry_sent();
+    rvp_metrics::instrument::key_update_relayed();
+    rvp_metrics::instrument::session_revoked();
 
     let text = server.render();
     for needle in [
@@ -49,6 +51,8 @@ async fn p7a_metrics_render_and_serve() {
         "rvp_datagrams_dropped_total",
         "rvp_connections_rejected_total",
         "rvp_quic_retries_total",
+        "rvp_key_updates_total",
+        "rvp_sessions_revoked_total",
     ] {
         assert!(
             text.contains(needle),

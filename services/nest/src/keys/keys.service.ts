@@ -96,7 +96,8 @@ export class KeysService {
 
   /**
    * Media grant for the SFU handshake (plan §5). `rvp-auth` validates
-   * iss=nest, aud=rvp, exp, and the sub/room_id/role claims.
+   * iss=nest, aud=rvp, exp, and the sub/room_id/role claims. The `jti` is
+   * returned so the caller can record it for revocation (P7c).
    */
   async signMediaGrant(args: {
     userId: string;
@@ -104,9 +105,10 @@ export class KeysService {
     role: string;
     ttlSeconds: number;
     mediaNode?: string;
-  }): Promise<{ token: string; expiresAt: number }> {
+  }): Promise<{ token: string; expiresAt: number; jti: string }> {
     const now = Math.floor(Date.now() / 1000);
     const expiresAt = now + args.ttlSeconds;
+    const jti = randomUUID();
     const payload: Record<string, string> = {
       sub: args.userId,
       room_id: args.roomId,
@@ -121,9 +123,9 @@ export class KeysService {
       .setAudience(this.grantAudience)
       .setIssuedAt(now)
       .setExpirationTime(expiresAt)
-      .setJti(randomUUID())
+      .setJti(jti)
       .sign(this.privateKey);
-    return { token, expiresAt };
+    return { token, expiresAt, jti };
   }
 
   /** Public half, as a CryptoKey, for verifying our own session tokens. */

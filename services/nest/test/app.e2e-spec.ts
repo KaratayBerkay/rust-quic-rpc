@@ -42,7 +42,7 @@ describe('rvp-nest (e2e)', () => {
     pool = app.get(Pool);
     // Clean slate for this run (dev DB).
     await pool.query(
-      'TRUNCATE pair_keys, room_members, rooms RESTART IDENTITY CASCADE',
+      'TRUNCATE pair_keys, grant_issues, room_members, rooms RESTART IDENTITY CASCADE',
     );
   });
 

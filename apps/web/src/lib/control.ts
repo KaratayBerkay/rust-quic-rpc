@@ -13,6 +13,7 @@ export const TYPE_JOIN_ROOM = 2;
 export const TYPE_WELCOME = 3;
 export const TYPE_PARTICIPANT_JOINED = 4;
 export const TYPE_PARTICIPANT_LEFT = 5;
+export const TYPE_KEY_UPDATE = 6;
 export const TYPE_ERROR = 15;
 
 export const PROTOCOL_VERSION = 1;
@@ -45,6 +46,7 @@ export type ControlMessage =
     }
   | { type: "participantJoined"; participantId: number; userId: string }
   | { type: "participantLeft"; participantId: number }
+  | { type: "keyUpdate"; kid: number }
   | { type: "error"; code: number; message: string };
 
 function writeU16(view: DataView, offset: number, value: number): number {
@@ -100,6 +102,9 @@ export function encode(msg: ControlMessage): Uint8Array {
     case "participantLeft":
       bodyLen += 8;
       break;
+    case "keyUpdate":
+      bodyLen += 1;
+      break;
     case "error":
       bodyLen += 2 + utf8(msg.message).length;
       break;
@@ -141,6 +146,10 @@ export function encode(msg: ControlMessage): Uint8Array {
     case "participantLeft":
       offset = writeU16(view, offset, TYPE_PARTICIPANT_LEFT);
       writeU64(view, offset, msg.participantId);
+      break;
+    case "keyUpdate":
+      offset = writeU16(view, offset, TYPE_KEY_UPDATE);
+      view.setUint8(offset, msg.kid);
       break;
     case "error":
       offset = writeU16(view, offset, TYPE_ERROR);
@@ -237,6 +246,12 @@ export function decodeBody(body: Uint8Array): ControlMessage {
       }
       const [participantId] = readU64(restView, 0);
       return { type: "participantLeft", participantId };
+    }
+    case TYPE_KEY_UPDATE: {
+      if (rest.length < 1) {
+        throw new ControlDecodeError("bad keyUpdate body", msgType);
+      }
+      return { type: "keyUpdate", kid: rest[0] };
     }
     case TYPE_ERROR: {
       if (rest.length < 2) {

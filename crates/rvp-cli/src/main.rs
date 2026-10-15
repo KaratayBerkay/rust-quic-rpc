@@ -4,6 +4,11 @@
 //! - `--jwt-public-key <pem>` — static NestJS Ed25519 public key (PEM/SPKI), or
 //! - `--nest-jwks <url>` — NestJS `GET /auth/jwks` endpoint; fetched at boot
 //!   and refreshed every 5 minutes so signing-key rotation needs no restart.
+//!
+//! Grant revocation (plan §6, P7c decision 5):
+//! - `--nest-revoked <url>` — NestJS `GET /auth/revoked` denylist
+//!   (`{"jtis":[...]}`), polled every 30s: newly revoked jtis reject joins
+//!   with 403 and kick the live sessions holding them.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -14,6 +19,7 @@ use clap::Parser;
 use tracing::{info, warn};
 
 const JWKS_REFRESH: Duration = Duration::from_secs(300);
+const REVOKED_POLL: Duration = Duration::from_secs(30);
 
 #[derive(Parser, Debug)]
 #[command(
@@ -38,6 +44,10 @@ struct Args {
     /// NestJS JWKS endpoint (e.g. http://127.0.0.1:3000/auth/jwks).
     #[arg(long, group = "auth_key")]
     nest_jwks: Option<String>,
+    /// NestJS revoked-grant denylist endpoint (e.g. http://127.0.0.1:3000/auth/revoked);
+    /// polled every 30s so kicks reach sessions already in a room (P7c).
+    #[arg(long)]
+    nest_revoked: Option<String>,
 }
 
 #[tokio::main]
@@ -72,6 +82,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let state = Arc::new(rvp_server::ServerState::new(verifier));
+    if let Some(url) = &args.nest_revoked {
+        spawn_revocation_poll(Arc::clone(&state), url.clone());
+    }
     let server = rvp_server::start_server_with_state(
         args.listen,
         rvp_server::server_config_self_signed()?,
@@ -139,4 +152,53 @@ fn spawn_jwks_refresh(verifier: Arc<rvp_auth::Verifier>, url: String) {
             }
         }
     });
+}
+
+/// Poll `GET /auth/revoked` (`{"jtis":["..."]}`) every [REVOKED_POLL] and
+/// feed the denylist (plan §6, P7c decision 5). The first tick fires
+/// immediately, so the list is populated at boot; `Revocation::apply` is
+/// idempotent, so unchanged polls are no-ops.
+fn spawn_revocation_poll(state: Arc<rvp_server::ServerState>, url: String) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(REVOKED_POLL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            match fetch_revoked(&url).await {
+                Ok(jtis) => {
+                    let newly = state.revocation.apply(jtis);
+                    if newly > 0 {
+                        warn!(url = %url, newly, "revoked grant jtis ingested");
+                    }
+                }
+                Err(e) => warn!(url = %url, error = %e, "revoked list fetch failed"),
+            }
+        }
+    });
+}
+
+/// Fetch the revoked-jti list (blocking client on a worker thread).
+async fn fetch_revoked(url: &str) -> Result<Vec<String>, String> {
+    let url = url.to_owned();
+    tokio::task::spawn_blocking(move || {
+        let mut response = ureq::get(&url)
+            .call()
+            .map_err(|e| format!("GET {url}: {e}"))?;
+        let body: serde_json::Value = response
+            .body_mut()
+            .read_json()
+            .map_err(|e| format!("GET {url}: body: {e}"))?;
+        let Some(list) = body.get("jtis").and_then(|v| v.as_array()) else {
+            return Err(format!("GET {url}: missing \"jtis\" array"));
+        };
+        list.iter()
+            .map(|j| {
+                j.as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| format!("GET {url}: non-string jti"))
+            })
+            .collect()
+    })
+    .await
+    .map_err(|e| format!("revoked fetch task: {e}"))?
 }

@@ -3,12 +3,15 @@
 //! One dedicated bidirectional QUIC stream per connection.
 //! Frame = `u32 BE length` ‖ `u16 BE type` ‖ body, where `length` covers type+body.
 //!
-//! Messages (P3 subset):
+//! Messages (P3 subset + P7c):
 //! - `Hello { protocol_version, grant_jwt }` — client → server, first frame
 //! - `JoinRoom` — client → server (room comes from the verified grant)
 //! - `Welcome { participant_id, max_datagram, roster }` — server → client; only
 //!   after this are DATAGRAMs accepted from the connection (plan §3.4)
 //! - `ParticipantJoined / ParticipantLeft` — server → client room events
+//! - `KeyUpdate { kid }` — client → server announce (pairwise `kid` rollover),
+//!   relayed by the server to every other room member (P7c; the sender is
+//!   implied by the room-unique `kid`, plan §5)
 //! - `Error { code, message }` — server → client
 
 use bytes::{BufMut, Bytes, BytesMut};
@@ -18,6 +21,7 @@ pub const TYPE_JOIN_ROOM: u16 = 2;
 pub const TYPE_WELCOME: u16 = 3;
 pub const TYPE_PARTICIPANT_JOINED: u16 = 4;
 pub const TYPE_PARTICIPANT_LEFT: u16 = 5;
+pub const TYPE_KEY_UPDATE: u16 = 6;
 pub const TYPE_ERROR: u16 = 15;
 
 /// Current control/media protocol version (`Hello.protocol_version`).
@@ -63,6 +67,11 @@ pub enum ControlMessage {
     },
     ParticipantLeft {
         participant_id: u64,
+    },
+    /// Pairwise key rollover announce (plan §3.3/§5): the sender will seal
+    /// media with `kid` from now on; receivers resolve it in their key map.
+    KeyUpdate {
+        kid: u8,
     },
     Error {
         code: u16,
@@ -125,6 +134,10 @@ impl ControlMessage {
             Self::ParticipantLeft { participant_id } => {
                 body.put_u16(TYPE_PARTICIPANT_LEFT);
                 body.put_u64(*participant_id);
+            }
+            Self::KeyUpdate { kid } => {
+                body.put_u16(TYPE_KEY_UPDATE);
+                body.put_u8(*kid);
             }
             Self::Error { code, message } => {
                 body.put_u16(TYPE_ERROR);
@@ -227,6 +240,12 @@ impl ControlMessage {
                     participant_id: u64::from_be_bytes(pid),
                 })
             }
+            TYPE_KEY_UPDATE => {
+                if rest.is_empty() {
+                    return Err(ControlError::BadBody(TYPE_KEY_UPDATE));
+                }
+                Ok(Self::KeyUpdate { kid: rest[0] })
+            }
             TYPE_ERROR => {
                 if rest.len() < 2 {
                     return Err(ControlError::BadBody(TYPE_ERROR));
@@ -296,6 +315,21 @@ mod tests {
         let left = ControlMessage::ParticipantLeft { participant_id: 9 };
         let frame = left.encode();
         assert_eq!(ControlMessage::decode_body(&frame[4..]).unwrap(), left);
+    }
+
+    #[test]
+    fn key_update_roundtrip() {
+        let msg = ControlMessage::KeyUpdate { kid: 7 };
+        let frame = msg.encode();
+        assert_eq!(ControlMessage::decode_body(&frame[4..]).unwrap(), msg);
+    }
+
+    #[test]
+    fn key_update_short_body_rejected() {
+        assert_eq!(
+            ControlMessage::decode_body(&[0x00u8, 0x06]),
+            Err(ControlError::BadBody(TYPE_KEY_UPDATE))
+        );
     }
 
     #[test]
@@ -383,6 +417,12 @@ mod tests {
     fn participant_left_wire_vector() {
         let msg = ControlMessage::ParticipantLeft { participant_id: 1 };
         assert_eq!(hex(&msg.encode()), "0000000a00050000000000000001");
+    }
+
+    #[test]
+    fn key_update_wire_vector() {
+        let msg = ControlMessage::KeyUpdate { kid: 7 };
+        assert_eq!(hex(&msg.encode()), "00000003000607");
     }
 
     #[test]
