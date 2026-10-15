@@ -60,6 +60,7 @@ const VECTORS: Array<[string, ControlMessage, string]> = [
     { type: "participantLeft", participantId: 1 },
     "0000000a00050000000000000001",
   ],
+  ["keyUpdate", { type: "keyUpdate", kid: 7 }, "00000003000607"],
   [
     "error",
     { type: "error", code: 401, message: "x" },
@@ -129,5 +130,11 @@ describe("ControlFrameReader", () => {
 describe("PROTOCOL_VERSION", () => {
   it("matches the Rust constant", () => {
     expect(PROTOCOL_VERSION).toBe(1);
+  });
+});
+
+describe("decodeBody rejects truncated keyUpdate", () => {
+  it("throws on empty keyUpdate body", () => {
+    expect(() => decodeBody(fromHex("0006"))).toThrow(ControlDecodeError);
   });
 });

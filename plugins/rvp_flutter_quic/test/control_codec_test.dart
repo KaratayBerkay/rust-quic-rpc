@@ -81,6 +81,21 @@ void main() {
       expect(em.message, 'bad grant');
     });
 
+    test('KeyUpdate roundtrip (Rust wire vector)', () {
+      final frame = encodeKeyUpdate(7);
+      expect(frame, _bytes([0, 0, 0, 3, 0, 6, 7]));
+      final decoded = decodeControlFrame(frame);
+      expect(decoded, isA<KeyUpdateMessage>());
+      expect((decoded as KeyUpdateMessage).kid, 7);
+    });
+
+    test('rejects truncated KeyUpdate body', () {
+      expect(
+        () => decodeControlBody(_bytes([0, 6])),
+        throwsA(isA<ControlCodecException>()),
+      );
+    });
+
     test('rejects bad frames', () {
       expect(() => decodeControlFrame(_bytes([0, 1, 2])),
           throwsA(isA<ControlCodecException>()));
