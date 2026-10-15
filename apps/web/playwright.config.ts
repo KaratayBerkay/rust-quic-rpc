@@ -28,7 +28,11 @@ export default defineConfig({
   webServer: process.env.RVP_E2E_BASE_URL
     ? undefined
     : {
-        command: "npm run build && npm run preview -- --port 4173 --strictPort",
+        // CI already runs `npm run build` as its own step — rebuilding here
+        // doubled the work and blew the 120s webServer timeout on cold runners.
+        command: process.env.CI
+          ? "npm run preview -- --port 4173 --strictPort"
+          : "npm run build && npm run preview -- --port 4173 --strictPort",
         url: "http://127.0.0.1:4173",
         reuseExistingServer: !process.env.CI,
         timeout: 120_000,
