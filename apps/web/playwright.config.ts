@@ -29,10 +29,12 @@ export default defineConfig({
     ? undefined
     : {
         // CI already runs `npm run build` as its own step — rebuilding here
-        // doubled the work and blew the 120s webServer timeout on cold runners.
+        // doubled the work and blew the 120s webServer timeout on cold
+        // runners. `--host 127.0.0.1` pins IPv4 so the Playwright url check
+        // (http://127.0.0.1:4173) can't hang on an IPv6-only localhost bind.
         command: process.env.CI
-          ? "npm run preview -- --port 4173 --strictPort"
-          : "npm run build && npm run preview -- --port 4173 --strictPort",
+          ? "npm run preview -- --host 127.0.0.1 --port 4173 --strictPort"
+          : "npm run build && npm run preview -- --host 127.0.0.1 --port 4173 --strictPort",
         url: "http://127.0.0.1:4173",
         reuseExistingServer: !process.env.CI,
         timeout: 120_000,
