@@ -1,0 +1,32 @@
+[package]
+name = "rvp-loadgen"
+description = "RVP load generator: N quinn clients x rooms, plaintext + pairwise AES-GCM fanout (plan §9, P7d)"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "rvp-loadgen"
+path = "src/main.rs"
+
+[dependencies]
+rvp-proto = { path = "../rvp-proto" }
+rvp-auth = { path = "../rvp-auth" }
+rvp-crypto = { path = "../rvp-crypto" }
+rvp-server = { path = "../rvp-server" }
+rvp-metrics = { path = "../rvp-metrics" }
+bytes = { workspace = true }
+quinn = { workspace = true }
+rustls = { workspace = true }
+rcgen = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = "1"
+jsonwebtoken = { workspace = true }
+getrandom = "0.2"
+thiserror = { workspace = true }
