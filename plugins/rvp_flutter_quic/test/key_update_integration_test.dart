@@ -105,15 +105,13 @@ void main() {
     addTearDown(() => client.close(force: true));
 
     // Wait for the HTTP endpoint to come up.
-    Map<String, dynamic> state = const {};
     await _waitFor(() async {
       try {
         final req = await client
             .getUrl(Uri.parse('http://127.0.0.1:$httpPort/state'))
             .timeout(const Duration(seconds: 2));
         final resp = await req.close().timeout(const Duration(seconds: 2));
-        final body = await resp.transform(utf8.decoder).join();
-        state = (jsonDecode(body) as Map<String, dynamic>);
+        await resp.transform(utf8.decoder).join();
         return resp.statusCode == HttpStatus.ok;
       } catch (_) {
         return false;

@@ -124,7 +124,14 @@ describe('rvp-nest key rotation (e2e)', () => {
   it('host rotation issues new dense kids and new keys to both members', async () => {
     const beforeAlice = await getKeys(aliceToken);
     const beforeBob = await getKeys(bobToken);
-    expect(beforeAlice).toEqual(beforeBob);
+    // Both sides hold the same kid+key (the `peer` field is per-perspective:
+    // alice's pair.peer is bob and vice versa).
+    expect(beforeAlice).toHaveLength(1);
+    expect(beforeBob).toHaveLength(1);
+    expect(beforeAlice[0].kid).toBe(beforeBob[0].kid);
+    expect(beforeAlice[0].key).toBe(beforeBob[0].key);
+    expect(beforeAlice[0].peer).toBe('bob');
+    expect(beforeBob[0].peer).toBe('alice');
     const oldKid = beforeAlice[0].kid;
     const oldKey = beforeAlice[0].key;
 
@@ -139,12 +146,13 @@ describe('rvp-nest key rotation (e2e)', () => {
     expect(newKey).not.toBe(oldKey);
     expect(newKey).toMatch(/^[0-9a-f]{32}$/);
 
-    // Both members pull the same fresh pair.
+    // Both members pull the same fresh kid+key (peer is per-perspective).
     const aliceAfter = await getKeys(aliceToken);
     const bobAfter = await getKeys(bobToken);
-    expect(aliceAfter).toEqual(bobAfter);
     expect(aliceAfter[0].kid).toBe(newKid);
     expect(aliceAfter[0].key).toBe(newKey);
+    expect(bobAfter[0].kid).toBe(newKid);
+    expect(bobAfter[0].key).toBe(newKey);
   });
 
   it('a second rotation keeps incrementing kids', async () => {
