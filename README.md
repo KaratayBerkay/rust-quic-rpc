@@ -17,7 +17,7 @@ Documented honestly in [`docs/plan.md` §12](docs/plan.md): LiveKit is the right
 | P4 | Flutter plugin + audio pipeline + voice demo ✅ |
 | P5 | NestJS control plane (login/rooms/grants/JWKS on Postgres) ✅ |
 | P6 | Web client — **P6a** WebTransport endpoint + Vite shell ✅; **P6b** audio pipeline + Playwright E2E ✅ |
-| P7 | Hardening — **P7a** Prometheus metrics ✅; **P7b** server hardening ✅; **P7c** KeyUpdate relay + revocation ✅ (PR1) + pair-key rotation with client announce/pull ✅ (PR2); **P7d** loadgen vs LiveKit pending |
+| P7 | Hardening — **P7a** Prometheus metrics ✅; **P7b** server hardening ✅; **P7c** KeyUpdate relay + revocation ✅ (PR1) + pair-key rotation with client announce/pull ✅ (PR2); **P7d** loadgen + LiveKit A/B harness ✅ |
 | P8 | Multi-instance (Redis room directory) |
 | P9–P12 | Deferred post-v1: TURN fallback, speaker detection, video, recording |
 
