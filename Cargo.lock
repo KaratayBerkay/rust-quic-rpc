@@ -2412,6 +2412,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "rvp-loadgen"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "clap",
+ "getrandom 0.2.17",
+ "jsonwebtoken",
+ "quinn",
+ "rcgen 0.13.2",
+ "rustls",
+ "rvp-auth",
+ "rvp-crypto",
+ "rvp-metrics",
+ "rvp-proto",
+ "rvp-server",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "rvp-metrics"
 version = "0.1.0"
 dependencies = [
