@@ -7,6 +7,13 @@
  *                   without it an ephemeral key is generated at boot (keys
  *                   rotate on restart — fine for dev, set the seed in prod).
  * GRANT_TTL_SECONDS / SESSION_TTL_SECONDS — JWT lifetimes (120 / 86400).
+ * MEDIA_NODES   — optional comma-separated list of media-node ids the media
+ *                 plane may pin a room to (P8a). Empty = no pinning (single
+ *                 node). Rooms are pinned round-robin; the id lands in the
+ *                 grant's `media_node` claim and in `rooms.media_node`.
+ * RVP_MEDIA_NODES_URL — optional `http://host:port/nodes` JSON endpoint
+ *                 (`{"nodes":[{"id":"node-1","address":"host:4433"}]}`)
+ *                 polled every 15s for the same purpose (P8a directory).
  */
 export interface AppConfig {
   databaseUrl: string;
@@ -14,6 +21,8 @@ export interface AppConfig {
   eddsaSeedHex: string | null;
   grantTtlSeconds: number;
   sessionTtlSeconds: number;
+  mediaNodes: string[];
+  mediaNodesUrl: string | null;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -21,11 +30,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (!databaseUrl) {
     throw new Error('DATABASE_URL is required');
   }
+  const mediaNodes = (env.MEDIA_NODES ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
   return {
     databaseUrl,
     port: Number(env.PORT ?? 3000),
     eddsaSeedHex: env.NEST_EDDSA_SEED ?? null,
     grantTtlSeconds: Number(env.GRANT_TTL_SECONDS ?? 120),
     sessionTtlSeconds: Number(env.SESSION_TTL_SECONDS ?? 86400),
+    mediaNodes,
+    mediaNodesUrl: env.RVP_MEDIA_NODES_URL ?? null,
   };
 }

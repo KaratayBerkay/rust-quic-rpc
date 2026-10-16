@@ -2,6 +2,7 @@ import { Controller, Inject, Param, Post, Req } from '@nestjs/common';
 import { RoomsService } from '../rooms/rooms.service';
 import { KeysService } from '../keys/keys.service';
 import { GrantIssuesService } from './grant-issues.service';
+import { MediaNodesService } from '../media-nodes/media-nodes.service';
 import { APP_CONFIG } from '../config.token';
 import type { AppConfig } from '../config';
 import type { AuthedRequest } from '../auth/session.guard';
@@ -19,6 +20,8 @@ interface GrantResponse {
   userId: string;
   role: 'host' | 'member';
   pairs: PairGrant[];
+  /** P8a: pin's `host:port`, when the room is pinned and resolvable. */
+  mediaAddress?: string | null;
 }
 
 /**
@@ -28,6 +31,10 @@ interface GrantResponse {
  * aud=rvp — consumed by `rvp-auth::Verifier`), and returns the pairwise
  * AES-128 keys this user needs, one per other member, with dense per-room
  * kids (P4b media-header byte3).
+ *
+ * P8a: when the room is pinned to a media node, the grant carries the
+ * `media_node` claim and the response includes `mediaAddress` so the client
+ * can connect to the pinned node (plan §2/§5).
  */
 @Controller('rooms/:id/grants')
 export class GrantsController {
@@ -35,6 +42,7 @@ export class GrantsController {
     private readonly rooms: RoomsService,
     private readonly keys: KeysService,
     private readonly grantIssues: GrantIssuesService,
+    private readonly mediaNodes: MediaNodesService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
@@ -44,11 +52,14 @@ export class GrantsController {
     @Param('id') id: string,
   ): Promise<GrantResponse> {
     const role = await this.rooms.memberRole(id, req.userId);
+    // P8a: look up the room's pin (if any) to stamp the grant + address.
+    const room = await this.rooms.getRoom(id, req.userId);
     const { token, expiresAt, jti } = await this.keys.signMediaGrant({
       userId: req.userId,
       roomId: id,
       role,
       ttlSeconds: this.config.grantTtlSeconds,
+      mediaNode: room.mediaNode ?? undefined,
     });
     // Record before returning: the grant must already be revocable when the
     // client starts using it (P7c).
@@ -71,6 +82,9 @@ export class GrantsController {
       );
       pairs.push({ peer: member.userId, kid, key: keyBytes.toString('hex') });
     }
+    const pin = room.mediaNode
+      ? this.mediaNodes.list().find((n) => n.id === room.mediaNode)
+      : undefined;
     return {
       grant: token,
       expiresAt,
@@ -78,6 +92,7 @@ export class GrantsController {
       userId: req.userId,
       role,
       pairs,
+      mediaAddress: pin?.address ?? null,
     };
   }
 }

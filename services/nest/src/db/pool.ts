@@ -18,8 +18,14 @@ CREATE TABLE IF NOT EXISTS rooms (
   id          uuid PRIMARY KEY,
   name        text NOT NULL,
   created_by  text NOT NULL,
-  created_at  timestamptz NOT NULL DEFAULT now()
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  -- P8a: media-node pin (plan §2/§5). NULL = unpinned (single-node).
+  media_node  text
 );
+
+-- Existing rows (pre-P8a) stay NULL; new rooms get pinned round-robin when
+-- a media-node directory is configured (MEDIA_NODES / RVP_MEDIA_NODES_URL).
+ALTER TABLE rooms ADD COLUMN IF NOT EXISTS media_node text;
 
 CREATE TABLE IF NOT EXISTS room_members (
   room_id  uuid NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
