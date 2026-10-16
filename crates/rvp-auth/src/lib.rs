@@ -40,6 +40,10 @@ pub struct GrantClaims {
     pub role: String,
     /// Optional unique token id (force-kick denylist hook, P3/P5).
     pub jti: Option<String>,
+    /// Optional media-node pin (P8a): the server that hosts this room. When
+    /// present, a media server whose `--node-id` differs refuses the join so
+    /// the client can retry the pinned node (plan §2/§5).
+    pub media_node: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,6 +53,8 @@ struct RawClaims {
     role: String,
     #[serde(default)]
     jti: Option<String>,
+    #[serde(default)]
+    media_node: Option<String>,
 }
 
 /// Offline JWT verifier bound to the control plane's Ed25519 key set.
@@ -145,6 +151,7 @@ impl Verifier {
             room_id: raw.room_id,
             role: raw.role,
             jti: raw.jti,
+            media_node: raw.media_node,
         })
     }
 }
@@ -180,6 +187,8 @@ mod tests {
         exp: u64,
         #[serde(skip_serializing_if = "Option::is_none")]
         jti: Option<&'static str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        media_node: Option<&'static str>,
     }
 
     fn keypair() -> (rcgen::KeyPair, Verifier) {
@@ -214,6 +223,7 @@ mod tests {
                 aud: DEFAULT_AUDIENCE,
                 exp: future_exp(),
                 jti: Some("jti-1"),
+                media_node: None,
             },
         );
         let claims = verifier.verify(&token).unwrap();
@@ -221,6 +231,27 @@ mod tests {
         assert_eq!(claims.room_id, "room-a");
         assert_eq!(claims.role, "host");
         assert_eq!(claims.jti.as_deref(), Some("jti-1"));
+        assert_eq!(claims.media_node, None);
+    }
+
+    #[test]
+    fn media_node_claim_verifies() {
+        let (kp, verifier) = keypair();
+        let token = sign(
+            &kp,
+            &TestClaims {
+                sub: "user-1",
+                room_id: "room-a",
+                role: "host",
+                iss: DEFAULT_ISSUER,
+                aud: DEFAULT_AUDIENCE,
+                exp: future_exp(),
+                jti: None,
+                media_node: Some("node-1"),
+            },
+        );
+        let claims = verifier.verify(&token).unwrap();
+        assert_eq!(claims.media_node.as_deref(), Some("node-1"));
     }
 
     #[test]
@@ -236,6 +267,7 @@ mod tests {
                 aud: DEFAULT_AUDIENCE,
                 exp: 1, // long past
                 jti: None,
+                media_node: None,
             },
         );
         assert!(matches!(verifier.verify(&token), Err(AuthError::Expired)));
@@ -254,6 +286,7 @@ mod tests {
                 aud: DEFAULT_AUDIENCE,
                 exp: future_exp(),
                 jti: None,
+                media_node: None,
             },
         );
         assert!(matches!(
@@ -275,6 +308,7 @@ mod tests {
                 aud: "other-api",
                 exp: future_exp(),
                 jti: None,
+                media_node: None,
             },
         );
         assert!(matches!(
@@ -310,6 +344,7 @@ mod tests {
             aud: DEFAULT_AUDIENCE,
             exp,
             jti: None,
+            media_node: None,
         }
     }
 
@@ -396,6 +431,7 @@ mod tests {
             aud: DEFAULT_AUDIENCE,
             exp: future_exp(),
             jti: Some("jti-interop"),
+            media_node: None,
         };
         let token = encode(&Header::new(Algorithm::EdDSA), &claims, &key).unwrap();
 

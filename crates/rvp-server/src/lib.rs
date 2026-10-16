@@ -136,6 +136,11 @@ pub struct ServerState {
     pub conns: Arc<ConnLimiter>,
     /// P7c grant revocation: jti denylist + live-session kick (plan decision 5).
     pub revocation: Arc<Revocation>,
+    /// P8a media-node identity (plan §2/§5). Empty = unpinned (single-node
+    /// default, current tests). When set, a grant whose `media_node` claim
+    /// differs from this id is refused at the handshake so the client can
+    /// reconnect to the pinned node.
+    pub node_id: String,
 }
 
 impl ServerState {
@@ -152,7 +157,21 @@ impl ServerState {
             limits,
             conns,
             revocation: Arc::new(Revocation::new()),
+            node_id: String::new(),
         }
+    }
+
+    /// Set the P8a media-node identity (plan §2/§5). A grant whose
+    /// `media_node` claim differs from this id is refused at the handshake.
+    pub fn with_node_id(mut self, node_id: impl Into<String>) -> Self {
+        self.node_id = node_id.into();
+        self
+    }
+
+    /// Same as [`with_node_id`] but on an existing state (handy for tests
+    /// that build `ServerState::new(...)` then set the node id).
+    pub fn set_node_id(&mut self, node_id: impl Into<String>) {
+        self.node_id = node_id.into();
     }
 }
 
@@ -289,6 +308,29 @@ pub(crate) async fn drive_handshake(
                         instrument::handshake_failed("revoked");
                         warn!(user = %claims.user_id, "revoked grant rejected");
                         send_error(writer, error_code::FORBIDDEN, "grant revoked").await;
+                        return None;
+                    }
+                    // P8a: a grant pinned to another media node is refused
+                    // here; the client reconnects to the pinned address.
+                    if !state.node_id.is_empty()
+                        && claims
+                            .media_node
+                            .as_deref()
+                            .is_some_and(|pin| pin != state.node_id)
+                    {
+                        instrument::handshake_failed("wrong_node");
+                        warn!(
+                            user = %claims.user_id,
+                            want = %claims.media_node.as_deref().unwrap_or_default(),
+                            have = %state.node_id,
+                            "grant pinned to another media node"
+                        );
+                        send_error(
+                            writer,
+                            error_code::WRONG_NODE,
+                            "room is hosted on another media node",
+                        )
+                        .await;
                         return None;
                     }
                     claims
