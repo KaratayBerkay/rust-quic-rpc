@@ -1,0 +1,38 @@
+{
+  "artifact": "loopback smoke (single host, in-process server; not a LiveKit A/B)",
+  "rooms": 2,
+  "clients_per_room": 3,
+  "clients": 6,
+  "crypto": true,
+  "tick_ms": 20.0,
+  "payload_bytes": 80,
+  "duration_secs": 3.0,
+  "warmup_secs": 1.0,
+  "join": {
+    "count": 6,
+    "p50_ms": 2.82518,
+    "p95_ms": 3.503072,
+    "p99_ms": 3.503072,
+    "max_ms": 3.503072,
+    "mean_ms": 2.7588933333333334
+  },
+  "media": {
+    "count": 1804,
+    "p50_ms": 0.114056,
+    "p95_ms": 0.244087,
+    "p99_ms": 0.348819,
+    "max_ms": 2.054335,
+    "mean_ms": 0.12830431485587593
+  },
+  "datagrams_sent": 1800,
+  "datagrams_opened": 1804,
+  "bytes_sent": 201600,
+  "bytes_received": 202048,
+  "missing_key_dropped": 1804,
+  "decrypt_failures": 0,
+  "malformed_dropped": 0,
+  "send_errors": 0,
+  "wall_secs": 4.209178638,
+  "cpu_secs": 0.1200000000000001,
+  "samples_truncated": false
+}
