@@ -104,6 +104,11 @@ class VoicePipeline {
   }
 
   /// Register an already-created pairwise key for one recipient.
+  ///
+  /// Key rotation (plan §5): re-registering the same participant with a new
+  /// [kid] keeps the old kid in the byKid index, so in-flight datagrams
+  /// sealed with the old key still decrypt during the switch (bounded: kids
+  /// are 1..255 per room).
   void addPeer(int participantId, {required int kid, required PairwiseKey key}) {
     final peer = PipelinePeer(
       participantId: participantId,

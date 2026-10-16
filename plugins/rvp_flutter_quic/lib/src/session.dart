@@ -139,6 +139,12 @@ class RvpSession {
   Future<void> sendDatagram(List<int> data) =>
       _conn.sendDatagram(data: data);
 
+  /// Announce a pairwise-key rotation on the control stream (plan §5): the
+  /// server relays `KeyUpdate` to every other member, who then pull fresh
+  /// keys from the control plane and swap their pipeline peers.
+  Future<void> sendKeyUpdate(int kid) =>
+      _conn.writeControlFrame(frame: encodeKeyUpdate(kid));
+
   /// Close the connection (both streams complete afterwards).
   Future<void> close({int code = 0, String reason = 'bye'}) async {
     _conn.close(code: code, reason: reason);

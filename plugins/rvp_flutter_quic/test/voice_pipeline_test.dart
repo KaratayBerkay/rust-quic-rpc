@@ -194,4 +194,40 @@ void main() {
     await flush();
     expect(bob.datagramsReceived, before);
   });
+
+  test('key rotation swaps the send kid but keeps the old kid receivable',
+      () async {
+    final rotatedKeyBytes = List<int>.generate(16, (i) => 255 - i);
+
+    // Rotate both sides to kid=2 with a fresh key (plan §5).
+    await alice.addPeerBytes(1, kid: 2, key: rotatedKeyBytes);
+    await bob.addPeerBytes(1, kid: 2, key: rotatedKeyBytes);
+
+    // Outbound now uses the new kid.
+    await alice.pushPcm(sineFrame());
+    await flush();
+    expect(MediaDatagram.parse(sentByAlice.single).header.kid, 2);
+    expect(bob.decryptFailures, 0);
+    expect(bob.missingKeyDropped, 0);
+    expect(bob.jitter.buffered, 1);
+
+    // In-flight datagrams sealed with the OLD key (kid=1) still open.
+    final oldKey = await PairwiseKey.newInstance(key: keyBytes);
+    final oldCiphertext =
+        await oldKey.seal(seq: 99, plaintext: List<int>.filled(32, 1));
+    toBob.add(
+      MediaDatagram(
+        header: MediaHeader(
+          pt: kPtOpusEnc,
+          kid: 1,
+          sequence: 99,
+          timestamp: 0,
+        ),
+        payload: oldCiphertext,
+      ).build(),
+    );
+    await flush();
+    expect(bob.decryptFailures, 0);
+    expect(bob.missingKeyDropped, 0);
+  });
 }
