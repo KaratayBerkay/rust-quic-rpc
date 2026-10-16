@@ -63,6 +63,10 @@ struct Args {
     /// Disable the QUIC Retry handshake (avoid latency noise in benchmarks).
     #[arg(long)]
     no_retry: bool,
+    /// P8a media-node identity (plan §2/§5): refuse grants whose `media_node`
+    /// claim differs (the client reconnects to the pinned node). Empty = off.
+    #[arg(long, default_value = "")]
+    node_id: String,
 }
 
 #[tokio::main]
@@ -114,7 +118,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args.no_retry {
         limits.enable_retry = false;
     }
-    let state = Arc::new(rvp_server::ServerState::with_limits(verifier, limits));
+    let mut state = rvp_server::ServerState::with_limits(verifier, limits);
+    if !args.node_id.is_empty() {
+        state = state.with_node_id(args.node_id.clone());
+        info!(node_id = %args.node_id, "P8a media-node identity set");
+    }
+    let state = Arc::new(state);
     if let Some(url) = &args.nest_revoked {
         spawn_revocation_poll(Arc::clone(&state), url.clone());
     }
