@@ -84,6 +84,24 @@ class HarnessState {
       client.close(force: true);
     }
   }
+
+  /// POST `<harness-origin>/rotate` (P7c key rotation): regenerate every
+  /// pairwise key with a fresh kid, then return the new `/state`.
+  static Future<HarnessState> rotate(String stateUrl) async {
+    final origin = Uri.parse(stateUrl).replace(path: '/rotate');
+    final client = HttpClient();
+    try {
+      final req = await client.postUrl(origin);
+      final resp = await req.close().timeout(const Duration(seconds: 5));
+      final body = await resp.transform(utf8.decoder).join();
+      if (resp.statusCode != HttpStatus.ok) {
+        throw HttpException('POST $origin → HTTP ${resp.statusCode}');
+      }
+      return parse(body);
+    } finally {
+      client.close(force: true);
+    }
+  }
 }
 
 List<int> _hex(String s) => [

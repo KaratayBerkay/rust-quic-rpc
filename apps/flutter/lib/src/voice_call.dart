@@ -5,6 +5,12 @@
 ///   mic → alice → network → bob → speaker (self-echo over the wire).
 /// - **two-device**: this device runs one user; the peer joins from elsewhere
 ///   with the same harness grants.
+///
+/// Key rotation (P7c, plan §5): [VoiceCall.rotateKeys] hits the harness
+/// `POST /rotate`, re-applies the fresh pairwise keys, and announces
+/// `KeyUpdate` on the control stream; a `KeyUpdate` received from the peer
+/// re-fetches `/state` and swaps the pipeline keys (old kids stay receivable
+/// for in-flight datagrams).
 library;
 
 import 'dart:async';
@@ -25,6 +31,9 @@ class VoiceCall {
     required this.mic,
     required this.speaker,
     required this.log,
+    required this.stateUrl,
+    required this.applyKeys,
+    required this.secondaryApplyKeys,
   });
 
   final String user;
@@ -33,15 +42,20 @@ class VoiceCall {
   final Mic mic;
   final Speaker speaker;
   final LogFn log;
+  final String stateUrl;
+  final Future<void> Function(HarnessState) applyKeys;
+  final Future<void> Function(HarnessState)? secondaryApplyKeys;
+  final List<StreamSubscription<ControlMessage>> _keySubs = [];
 
   /// Whether the local mic is muted.
   bool get muted => pipeline.muted;
-  set muted(bool value) => pipeline.muted = value;
+  set muted(bool value) => pipeline.muted;
 
   /// Loopback on this device: alice sends, bob plays (plan §4 demo).
   static Future<VoiceCall> loopback({
     required HarnessState state,
     String host = '127.0.0.1',
+    required String stateUrl,
     required LogFn log,
   }) async {
     await initRustLib();
@@ -101,14 +115,35 @@ class VoiceCall {
     log('loopback live: mic → alice → SFU → bob → speaker '
         '(kid=${pair.kid})');
 
-    return VoiceCall._(
+    Future<void> applyKeys(HarnessState s) async {
+      final p = s.pairs.singleOrNull ?? s.pairFor('alice');
+      if (p == null) return;
+      await alicePipe.addPeerBytes(
+        bob.welcome.participantId,
+        kid: p.kid,
+        key: p.key,
+      );
+      await bobPipe.addPeerBytes(
+        alice.welcome.participantId,
+        kid: p.kid,
+        key: p.key,
+      );
+      log('keys applied: kid=${p.kid}');
+    }
+
+    final call = VoiceCall._(
       user: 'alice+bob (loopback)',
       session: alice,
       pipeline: alicePipe,
       mic: mic,
       speaker: speaker,
       log: log,
+      stateUrl: stateUrl,
+      applyKeys: applyKeys,
+      secondaryApplyKeys: applyKeys,
     )._withSecondary(bob, bobPipe);
+    call._watchKeyUpdates([alice, bob]);
+    return call;
   }
 
   /// One user on this device; the peer joins from another device.
@@ -116,6 +151,7 @@ class VoiceCall {
     required HarnessState state,
     required String me,
     String host = '127.0.0.1',
+    required String stateUrl,
     required LogFn log,
   }) async {
     await initRustLib();
@@ -163,14 +199,64 @@ class VoiceCall {
 
     log('live as $me (kid=${pair.kid}), peer $other pid=${peer.participantId}');
 
-    return VoiceCall._(
+    Future<void> applyKeys(HarnessState s) async {
+      final p = s.pairFor(me);
+      if (p == null) return;
+      await pipeline.addPeerBytes(
+        peer.participantId,
+        kid: p.kid,
+        key: p.key,
+      );
+      log('keys applied: kid=${p.kid}');
+    }
+
+    final call = VoiceCall._(
       user: me,
       session: session,
       pipeline: pipeline,
       mic: mic,
       speaker: speaker,
       log: log,
+      stateUrl: stateUrl,
+      applyKeys: applyKeys,
+      secondaryApplyKeys: null,
     );
+    call._watchKeyUpdates([session]);
+    return call;
+  }
+
+  /// Rotate every pairwise key via the harness `POST /rotate` (P7c), swap
+  /// the fresh keys into the local pipelines, and announce `KeyUpdate` on
+  /// the control stream so the peer re-fetches and swaps too (plan §5).
+  Future<void> rotateKeys() async {
+    final fresh = await HarnessState.rotate(stateUrl);
+    await applyKeys(fresh);
+    await secondaryApplyKeys?.call(fresh);
+    final maxKid = fresh.pairs.fold<int>(0, (m, p) => p.kid > m ? p.kid : m);
+    if (maxKid > 0) {
+      await session.sendKeyUpdate(maxKid);
+      log('rotated keys, announced kid=$maxKid');
+    }
+  }
+
+  /// On a relayed `KeyUpdate` from the peer: re-fetch `/state` and swap the
+  /// pipeline keys. The old kid stays receivable for in-flight datagrams.
+  void _watchKeyUpdates(List<RvpSession> sessions) {
+    for (final s in sessions) {
+      _keySubs.add(
+        s.messages.listen((msg) {
+          if (msg is KeyUpdateMessage) {
+            log('keyUpdate received (kid=${msg.kid}), pulling fresh keys');
+            HarnessState.fetch(stateUrl).then((fresh) async {
+              await applyKeys(fresh);
+              await secondaryApplyKeys?.call(fresh);
+            }).catchError((Object e) {
+              log('key pull failed: $e');
+            });
+          }
+        }),
+      );
+    }
   }
 
   // Loopback keeps a second session/pipeline to tear down (alice is the
@@ -186,6 +272,10 @@ class VoiceCall {
 
   Future<void> stop() async {
     log('stopping call ($user)');
+    for (final sub in _keySubs) {
+      await sub.cancel();
+    }
+    _keySubs.clear();
     try {
       await mic.close();
     } catch (e) {

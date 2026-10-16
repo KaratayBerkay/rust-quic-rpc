@@ -36,6 +36,7 @@ class _DemoHomePageState extends State<DemoHomePage> {
   bool _loopback = true;
   String _user = 'alice';
   bool _connecting = false;
+  bool _rotating = false;
   VoiceCall? _call;
 
   bool get _live => _call != null;
@@ -67,12 +68,14 @@ class _DemoHomePageState extends State<DemoHomePage> {
           ? await VoiceCall.loopback(
               state: state,
               host: _host.text.trim(),
+              stateUrl: _stateUrl.text.trim(),
               log: _log,
             )
           : await VoiceCall.twoDevice(
               state: state,
               me: _user,
               host: _host.text.trim(),
+              stateUrl: _stateUrl.text.trim(),
               log: _log,
             );
       if (!mounted) {
@@ -170,6 +173,23 @@ class _DemoHomePageState extends State<DemoHomePage> {
                 icon: Icon(
                   _live && _call!.muted ? Icons.mic_off : Icons.mic,
                 ),
+              ),
+              const SizedBox(width: 12),
+              IconButton.filledTonal(
+                tooltip: 'Rotate keys (P7c)',
+                onPressed: _live && !_rotating
+                    ? () async {
+                        setState(() => _rotating = true);
+                        try {
+                          await _call!.rotateKeys();
+                        } catch (e) {
+                          _log('rotate failed: $e');
+                        } finally {
+                          if (mounted) setState(() => _rotating = false);
+                        }
+                      }
+                    : null,
+                icon: const Icon(Icons.refresh),
               ),
             ],
           ),
