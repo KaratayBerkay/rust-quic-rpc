@@ -27,6 +27,11 @@ export interface WtSession {
   roster: Array<{ participantId: number; userId: string }>;
   /** Fire-and-forget media datagram (live audio; drops on congestion). */
   sendDatagram(payload: Uint8Array): void;
+  /**
+   * Send one control frame after the handshake (e.g. `keyUpdate` on key
+   * rotation, plan §5). Hello/JoinRoom are already consumed by connect.
+   */
+  sendControl(msg: ControlMessage): void;
   /** Subscribe to server-push control events after Welcome. */
   onControl(listener: (msg: ControlMessage) => void): () => void;
   /** Subscribe to incoming media datagrams. */
@@ -180,6 +185,11 @@ export async function connectWt(options: WtConnectOptions): Promise<WtSession> {
         // Congestion or closed session — live audio drops by design (plan §4).
       });
       writer.releaseLock();
+    },
+    sendControl(msg: ControlMessage) {
+      writer.write(encode(msg)).catch(() => {
+        // Control stream closed — session teardown handles the rest.
+      });
     },
     onControl(listener) {
       controlListeners.add(listener);
