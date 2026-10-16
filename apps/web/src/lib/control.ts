@@ -28,6 +28,8 @@ export const ErrorCode = {
   INTERNAL: 500,
   CONNECTION_LIMIT: 503,
   VERSION_UNSUPPORTED: 505,
+  /** P8a: grant is pinned to a different media node (plan §2/§5). */
+  WRONG_NODE: 521,
 } as const;
 
 export interface RosterEntry {

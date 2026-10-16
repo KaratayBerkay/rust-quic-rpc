@@ -13,6 +13,10 @@ export interface RoomResponse {
   name: string;
   createdBy: string;
   createdAt: string;
+  /** P8a media-node pin (plan §2/§5). Null = unpinned (single-node). */
+  mediaNode?: string | null;
+  /** P8a `host:port` of the pinned node, when resolvable from the directory. */
+  mediaAddress?: string | null;
 }
 
 export interface MemberResponse {
@@ -35,6 +39,8 @@ export interface GrantResponse {
   userId: string;
   role: string;
   pairs: PairKey[];
+  /** P8a: pin's `host:port`, when the room is pinned and resolvable. */
+  mediaAddress?: string | null;
 }
 
 export class NestApiError extends Error {
