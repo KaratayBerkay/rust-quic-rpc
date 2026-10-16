@@ -48,6 +48,21 @@ struct Args {
     /// polled every 30s so kicks reach sessions already in a room (P7c).
     #[arg(long)]
     nest_revoked: Option<String>,
+    /// Sustained ingress ceiling in packets/s (load-test override, plan §9/P7d).
+    #[arg(long)]
+    ingress_pps: Option<f64>,
+    /// Sustained ingress ceiling in bytes/s (load-test override, plan §9/P7d).
+    #[arg(long)]
+    ingress_bps: Option<f64>,
+    /// Concurrent connections allowed per source IP (load-test override).
+    #[arg(long)]
+    max_conn_per_ip: Option<usize>,
+    /// Concurrent sessions allowed per user (grant subject; load-test override).
+    #[arg(long)]
+    max_conn_per_user: Option<usize>,
+    /// Disable the QUIC Retry handshake (avoid latency noise in benchmarks).
+    #[arg(long)]
+    no_retry: bool,
 }
 
 #[tokio::main]
@@ -81,7 +96,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         spawn_jwks_refresh(Arc::clone(&verifier), url.clone());
     }
 
-    let state = Arc::new(rvp_server::ServerState::new(verifier));
+    // Load-test overrides (plan §9/P7d): raise caps so a local benchmark is not
+    // throttled by the interactive-server defaults; unset flags keep defaults.
+    let mut limits = rvp_server::Limits::default();
+    if let Some(pps) = args.ingress_pps {
+        limits.ingress_pps = pps;
+    }
+    if let Some(bps) = args.ingress_bps {
+        limits.ingress_bps = bps;
+    }
+    if let Some(n) = args.max_conn_per_ip {
+        limits.max_conn_per_ip = n;
+    }
+    if let Some(n) = args.max_conn_per_user {
+        limits.max_conn_per_user = n;
+    }
+    if args.no_retry {
+        limits.enable_retry = false;
+    }
+    let state = Arc::new(rvp_server::ServerState::with_limits(verifier, limits));
     if let Some(url) = &args.nest_revoked {
         spawn_revocation_poll(Arc::clone(&state), url.clone());
     }
