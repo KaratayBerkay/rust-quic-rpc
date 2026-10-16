@@ -2,7 +2,7 @@
 
 Rust + QUIC real-time **voice** server: a DATAGRAM SFU with pairwise end-to-end-encrypted Opus, EdDSA JWT auth via a NestJS control plane, and Flutter + TanStack web clients.
 
-> **Status: P1–P6 + P7a–P7b + P7c (PR1) shipped** — Rust QUIC SFU (rooms, opaque fanout, JWT auth) + Flutter plugin with full voice pipeline and demo (`apps/flutter`) + NestJS control plane (`services/nest`: login, rooms, media grants, JWKS on Postgres) + WebTransport endpoint and Vite web client (`apps/web`: control handshake, pairwise AES-GCM, AudioWorklet/WebCodecs Opus, Playwright E2E) + Prometheus observability (`crates/rvp-metrics`, `rvp-cli --metrics-listen`) + server hardening (QUIC Retry, per-IP/per-user connection caps, pps/bps + datagram-size limits in `crates/rvp-server/src/limits.rs`) + `KeyUpdate{kid}` relay and grant revocation (host kick → `grant_issues` → `rvp-cli --nest-revoked` → denylist + live kick). Design plan: [`docs/plan.md`](docs/plan.md).
+> **Status: P1–P6 + P7a–P7b + P7c shipped** — Rust QUIC SFU (rooms, opaque fanout, JWT auth) + Flutter plugin with full voice pipeline and demo (`apps/flutter`) + NestJS control plane (`services/nest`: login, rooms, media grants, JWKS on Postgres) + WebTransport endpoint and Vite web client (`apps/web`: control handshake, pairwise AES-GCM, AudioWorklet/WebCodecs Opus, Playwright E2E) + Prometheus observability (`crates/rvp-metrics`, `rvp-cli --metrics-listen`) + server hardening (QUIC Retry, per-IP/per-user connection caps, pps/bps + datagram-size limits in `crates/rvp-server/src/limits.rs`) + `KeyUpdate{kid}` relay, pair-key rotation (host rotate → announce → members pull) and grant revocation (host kick → `grant_issues` → `rvp-cli --nest-revoked` → denylist + live kick). Design plan: [`docs/plan.md`](docs/plan.md).
 
 ## Why not just LiveKit?
 
@@ -17,7 +17,7 @@ Documented honestly in [`docs/plan.md` §12](docs/plan.md): LiveKit is the right
 | P4 | Flutter plugin + audio pipeline + voice demo ✅ |
 | P5 | NestJS control plane (login/rooms/grants/JWKS on Postgres) ✅ |
 | P6 | Web client — **P6a** WebTransport endpoint + Vite shell ✅; **P6b** audio pipeline + Playwright E2E ✅ |
-| P7 | Hardening — **P7a** Prometheus metrics ✅; **P7b** server hardening ✅; **P7c PR1** KeyUpdate relay + revocation ✅ (PR2 rotation/clients + P7d loadgen vs LiveKit pending) |
+| P7 | Hardening — **P7a** Prometheus metrics ✅; **P7b** server hardening ✅; **P7c** KeyUpdate relay + revocation ✅ (PR1) + pair-key rotation with client announce/pull ✅ (PR2); **P7d** loadgen vs LiveKit pending |
 | P8 | Multi-instance (Redis room directory) |
 | P9–P12 | Deferred post-v1: TURN fallback, speaker detection, video, recording |
 

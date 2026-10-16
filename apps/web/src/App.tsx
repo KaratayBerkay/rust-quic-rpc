@@ -16,12 +16,13 @@ import {
   addMember,
   createGrant,
   createRoom,
+  fetchPairKeys,
   login,
   NestApiError,
+  rotatePairKeys,
   type GrantResponse,
   type SessionResponse,
 } from "./lib/api";
-import { keyFromHex, PairwiseKey } from "./lib/crypto";
 import { VoicePipeline } from "./lib/voice";
 import { connectWt, type WtSession } from "./lib/wt";
 import {
@@ -361,19 +362,13 @@ function RoomPage() {
         createEncoder: createWebCodecsOpusEncoder,
         createDecoder: createWebCodecsOpusDecoder,
       });
-      for (const pair of g.pairs) {
-        pipeline.addPeer({
-          userId: pair.peer,
-          kid: pair.kid,
-          key: new PairwiseKey(keyFromHex(pair.key)),
-        });
-      }
+      pipeline.applyPairs(g.pairs);
       pipeline.onPlaybackPcm = (frame) => {
         playbackRef.current?.enqueue(frame);
       };
       voiceRef.current = pipeline;
 
-      // Subscribe to control events (roster) and media datagrams.
+      // Subscribe to control events (roster + key rotation) and media datagrams.
       s.onControl((msg) => {
         setEvents((prev) => [...prev, JSON.stringify(msg)]);
         if (msg.type === "participantJoined") {
@@ -385,16 +380,20 @@ function RoomPage() {
           // Register the new peer's pairwise key if present in the grant.
           const pair = g.pairs.find((p) => p.peer === msg.userId);
           if (pair) {
-            pipeline.addPeer({
-              userId: msg.userId,
-              kid: pair.kid,
-              key: new PairwiseKey(keyFromHex(pair.key)),
-            });
+            pipeline.applyPairs([pair]);
           }
         } else if (msg.type === "participantLeft") {
           setRoster((prev) =>
             prev.filter((r) => r.participantId !== msg.participantId),
           );
+        } else if (msg.type === "keyUpdate") {
+          // A member rotated keys (plan §5): pull the fresh pairs from Nest
+          // and swap them into the pipeline (old kids stay receivable).
+          void fetchPairKeys(nestUrl(), session.accessToken, roomId)
+            .then((res) => pipeline.applyPairs(res.pairs))
+            .catch((e) =>
+              setError(e instanceof Error ? e.message : String(e)),
+            );
         }
       });
       s.onData((payload) => pipeline.receiveDatagram(payload));
@@ -434,6 +433,27 @@ function RoomPage() {
     const next = !muted;
     setMuted(next);
     voiceRef.current?.setMuted(next);
+  };
+
+  const onRotateKeys = async () => {
+    if (!session_ || !grant) return;
+    setBusy(true);
+    setError(null);
+    try {
+      // Host-only endpoint: rotate every pair in the room (new dense kids).
+      const res = await rotatePairKeys(nestUrl(), session.accessToken, roomId);
+      voiceRef.current?.applyPairs(res.pairs);
+      // Announce the highest new kid so other members pull fresh keys.
+      const maxKid = res.pairs.reduce((m, p) => Math.max(m, p.kid), 0);
+      if (maxKid > 0) {
+        session_.sendControl({ type: "keyUpdate", kid: maxKid });
+      }
+      setEvents((prev) => [...prev, `rotated ${res.pairs.length} pair(s), announced kid=${maxKid}`]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const onLeave = () => {
@@ -476,6 +496,18 @@ function RoomPage() {
               {muted ? "Unmute" : "Mute"}
             </button>{" "}
             {audioActive && <span>🎤 audio active</span>}
+            {grant?.role === "host" && (
+              <>
+                {" "}
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void onRotateKeys()}
+                >
+                  {busy ? "Rotating…" : "Rotate keys"}
+                </button>
+              </>
+            )}
           </p>
           <h3>Voice stats</h3>
           <pre style={{ background: "#f4f4f4", padding: 8, overflowX: "auto" }}>

@@ -7,7 +7,7 @@
  * the pure fanout/decrypt/jitter logic is unit-testable in Node.
  */
 
-import { PairwiseKey } from "./crypto";
+import { PairwiseKey, keyFromHex } from "./crypto";
 import {
   FRAME_SAMPLES,
   JitterBuffer,
@@ -115,7 +115,25 @@ export class VoicePipeline {
 
   addPeer(peer: PipelinePeer): void {
     this.peers.set(peer.userId, peer);
+    // Key rotation (plan §5): a peer swapped to a new kid keeps its old
+    // byKid entry, so in-flight datagrams sealed with the old key still
+    // decrypt during the switch (bounded: kids are 1..255 per room).
     this.byKid.set(peer.kid, peer);
+  }
+
+  /**
+   * Install/replace pairwise keys from a Nest `pairs` payload (grant
+   * response, `GET /rooms/:id/keys`, or `POST /rooms/:id/keys/rotate`).
+   * Used on connect and again on key rotation (plan §5).
+   */
+  applyPairs(pairs: ReadonlyArray<{ peer: string; kid: number; key: string }>): void {
+    for (const pair of pairs) {
+      this.addPeer({
+        userId: pair.peer,
+        kid: pair.kid,
+        key: new PairwiseKey(keyFromHex(pair.key)),
+      });
+    }
   }
 
   removePeer(userId: string): void {

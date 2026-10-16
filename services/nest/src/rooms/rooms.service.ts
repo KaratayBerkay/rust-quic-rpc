@@ -255,6 +255,65 @@ export class RoomsService {
     }));
   }
 
+  /**
+   * Rotate every pairwise key in a room (P7c key rotation, plan §5): each
+   * pair gets a fresh random key under a new dense kid, continuing past the
+   * room's current max (so old and new kids never collide and receivers can
+   * keep both installed during the switch). The room row is locked so
+   * concurrent rotations/grants serialize on kid allocation, mirroring
+   * `ensurePairKey`. Only a host may rotate.
+   *
+   * The caller receives the new keys and announces `KeyUpdate{kid}` on its
+   * control stream; other members pull `GET /rooms/:id/keys` and swap.
+   * A room that has rotated past kid 255 fails loudly on the next UPDATE
+   * (same bound as new-pair inserts — acceptable for v1, revisit before
+   * production).
+   */
+  async rotatePairKeys(roomId: string, requesterId: string): Promise<PairKey[]> {
+    if (!UUID_RE.test(roomId)) {
+      throw new NotFoundException('room not found');
+    }
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const requester = await client.query<{ role: 'host' | 'member' }>(
+        'SELECT role FROM room_members WHERE room_id = $1 AND user_id = $2',
+        [roomId, requesterId],
+      );
+      if (!requester.rows[0]) {
+        throw new ForbiddenException('not a member of this room');
+      }
+      if (requester.rows[0].role !== 'host') {
+        throw new ForbiddenException('only a host can rotate keys');
+      }
+      await client.query('SELECT id FROM rooms WHERE id = $1 FOR UPDATE', [roomId]);
+      const pairs = await client.query<{ user_a: string; user_b: string }>(
+        'SELECT user_a, user_b FROM pair_keys WHERE room_id = $1',
+        [roomId],
+      );
+      const maxRes = await client.query<{ max: number | null }>(
+        'SELECT MAX(kid) AS max FROM pair_keys WHERE room_id = $1',
+        [roomId],
+      );
+      let kid = (maxRes.rows[0].max ?? 0) + 1;
+      for (const row of pairs.rows) {
+        await client.query(
+          `UPDATE pair_keys SET kid = $1, key_bytes = $2, created_at = now()
+           WHERE room_id = $3 AND user_a = $4 AND user_b = $5`,
+          [kid, randomKey(), roomId, row.user_a, row.user_b],
+        );
+        kid += 1;
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+    return this.pairKeysFor(roomId, requesterId);
+  }
+
   private async requireMember(roomId: string, userId: string): Promise<void> {
     const res = await this.pool.query(
       'SELECT 1 FROM room_members WHERE room_id = $1 AND user_id = $2',

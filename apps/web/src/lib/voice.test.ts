@@ -232,6 +232,59 @@ describe("pcm converters", () => {
   });
 });
 
+describe("VoicePipeline key rotation (plan §5)", () => {
+  const KEY_ROTATED = keyFromHex("101112131415161718191a1b1c1d1e1f");
+
+  it("applyPairs installs Nest pairs and seals with the announced kid", async () => {
+    const { pipeline, sent } = makePipeline();
+    pipeline.applyPairs([{ peer: "bob", kid: 1, key: "000102030405060708090a0b0c0d0e0f" }]);
+    await pipeline.pushPcm(silence());
+    expect(sent.length).toBe(1);
+    expect(parseDatagram(sent[0]).header.kid).toBe(1);
+    expect(pipeline.peerCount()).toBe(1);
+  });
+
+  it("rotation swaps the send kid but keeps the old kid receivable", async () => {
+    const { pipeline, sent } = makePipeline();
+    pipeline.applyPairs([{ peer: "bob", kid: 1, key: "000102030405060708090a0b0c0d0e0f" }]);
+
+    // Rotate: same peer, new kid + new key (Nest rotate response shape).
+    pipeline.applyPairs([{ peer: "bob", kid: 2, key: "101112131415161718191a1b1c1d1e1f" }]);
+
+    // Outbound now uses the new kid.
+    await pipeline.pushPcm(silence());
+    expect(parseDatagram(sent[0]).header.kid).toBe(2);
+
+    // In-flight datagrams sealed with the OLD key still open (grace).
+    const opus = new Uint8Array([7, 7, 7, 7]);
+    pipeline.receiveDatagram(
+      await new PairwiseKey(KEY_A)
+        .seal(0, opus)
+        .then((sealed) =>
+          buildDatagram(
+            { ...defaultHeader(), pt: PT_OPUS_ENC, kid: 1, sequence: 0, timestamp: 0 },
+            sealed,
+          ),
+        ),
+    );
+    // And the NEW key opens with the new kid.
+    pipeline.receiveDatagram(
+      await new PairwiseKey(KEY_ROTATED)
+        .seal(1, opus)
+        .then((sealed) =>
+          buildDatagram(
+            { ...defaultHeader(), pt: PT_OPUS_ENC, kid: 2, sequence: 1, timestamp: FRAME_SAMPLES },
+            sealed,
+          ),
+        ),
+    );
+    await pipeline.flush();
+    expect(pipeline.stats.decryptFailures).toBe(0);
+    expect(pipeline.stats.missingKeyDropped).toBe(0);
+    expect(pipeline.tick().kind).toBe("packet");
+  });
+});
+
 async function pushN(pipeline: VoicePipeline, samples: number): Promise<void> {
   await pipeline.pushPcm(new Int16Array(samples));
 }

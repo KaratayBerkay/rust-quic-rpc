@@ -126,3 +126,34 @@ export function createGrant(
     token,
   );
 }
+
+export interface KeysResponse {
+  pairs: PairKey[];
+}
+
+/** Pull the caller's current pairwise keys (e.g. after a relayed keyUpdate). */
+export function fetchPairKeys(
+  baseUrl: string,
+  token: string,
+  roomId: string,
+): Promise<KeysResponse> {
+  return request<KeysResponse>(baseUrl, `/rooms/${roomId}/keys`, {}, token);
+}
+
+/**
+ * Host-only: rotate every pairwise key in the room (new dense kids, new
+ * random keys) and receive the caller's fresh pairs to announce via
+ * `KeyUpdate` (plan §5).
+ */
+export function rotatePairKeys(
+  baseUrl: string,
+  token: string,
+  roomId: string,
+): Promise<KeysResponse> {
+  return request<KeysResponse>(
+    baseUrl,
+    `/rooms/${roomId}/keys/rotate`,
+    { method: "POST" },
+    token,
+  );
+}

@@ -9,11 +9,12 @@ import { AuthController } from './auth/auth.controller';
 import { SessionGuard } from './auth/session.guard';
 import { RoomsController } from './rooms/rooms.controller';
 import { RoomsService } from './rooms/rooms.service';
+import { KeysController } from './rooms/keys.controller';
 import { GrantsController } from './grants/grants.controller';
 import { GrantIssuesService } from './grants/grant-issues.service';
 
 @Module({
-  controllers: [AuthController, RoomsController, GrantsController],
+  controllers: [AuthController, RoomsController, KeysController, GrantsController],
   providers: [
     { provide: APP_CONFIG, useFactory: () => loadConfig() },
     {
