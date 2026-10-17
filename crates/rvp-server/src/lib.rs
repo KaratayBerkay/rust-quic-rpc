@@ -27,6 +27,7 @@ pub mod limits;
 pub mod revocation;
 pub mod rooms;
 pub mod transport;
+pub mod ws;
 pub mod wt;
 
 pub use limits::{ConnGuard, ConnLimiter, IngressLimiter, Limits};

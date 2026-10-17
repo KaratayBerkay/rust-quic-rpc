@@ -25,6 +25,8 @@ rvp-proto = { path = "../rvp-proto" }
 rvp-auth = { path = "../rvp-auth" }
 rvp-metrics = { path = "../rvp-metrics" }
 wtransport = "0.7"
+tokio-tungstenite = { workspace = true }
+futures-util = "0.3"
 
 [dev-dependencies]
 jsonwebtoken = { workspace = true }
@@ -36,6 +38,10 @@ required-features = ["test-utils"]
 
 [[test]]
 name = "wt_loopback"
+required-features = ["test-utils"]
+
+[[test]]
+name = "ws_loopback"
 required-features = ["test-utils"]
 
 [[test]]

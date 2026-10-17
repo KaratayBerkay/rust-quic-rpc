@@ -37,6 +37,9 @@ struct Args {
     /// WebTransport/HTTP3 listen address (same JWT grants + rooms as --listen).
     #[arg(long)]
     wt_listen: Option<SocketAddr>,
+    /// WebSocket listen address (P9a UDP-blocked fallback; same grants/rooms).
+    #[arg(long)]
+    ws_listen: Option<SocketAddr>,
     /// Prometheus /metrics listen address (plan §9, P7a).
     #[arg(long)]
     metrics_listen: Option<SocketAddr>,
@@ -162,7 +165,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let wt = match args.wt_listen {
         Some(addr) => {
-            let wt = rvp_server::wt::start_wt_server(addr, state).await?;
+            let wt = rvp_server::wt::start_wt_server(addr, state.clone()).await?;
             info!(
                 addr = %wt.local_addr(),
                 cert_hash = %wt.cert_hash_hex(),
@@ -173,11 +176,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         None => None,
     };
+    let ws = match args.ws_listen {
+        Some(addr) => {
+            let ws = rvp_server::ws::start_ws_server(addr, state.clone()).await?;
+            info!(addr = %ws.local_addr(), "websocket endpoint up (ws://)");
+            Some(ws)
+        }
+        None => None,
+    };
     info!("rvp-server up — press ctrl-c to stop");
     tokio::signal::ctrl_c().await?;
     info!("shutting down");
     if let Some(wt) = wt {
         wt.shutdown().await;
+    }
+    if let Some(ws) = ws {
+        ws.shutdown().await;
     }
     server.shutdown().await;
     if let Some(metrics) = metrics {
