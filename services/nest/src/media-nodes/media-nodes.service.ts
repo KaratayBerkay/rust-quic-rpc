@@ -1,4 +1,5 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { APP_CONFIG } from '../config.token';
 import { AppConfig } from '../config';
 
 /** One media node the control plane may pin a room to (P8a, plan §2/§5). */
@@ -26,7 +27,7 @@ export class MediaNodesService implements OnModuleInit, OnModuleDestroy {
   private nodes: MediaNode[] = [];
   private timer: NodeJS.Timeout | null = null;
 
-  constructor(private readonly config: AppConfig) {
+  constructor(@Inject(APP_CONFIG) private readonly config: AppConfig) {
     this.nodes = this.parseEnvList(config.mediaNodes);
   }
 
