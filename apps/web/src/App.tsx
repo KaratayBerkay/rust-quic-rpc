@@ -25,6 +25,7 @@ import {
 } from "./lib/api";
 import { VoicePipeline } from "./lib/voice";
 import { connectWt, type WtSession } from "./lib/wt";
+import { connectWs } from "./lib/ws";
 import {
   createWebCodecsOpusDecoder,
   createWebCodecsOpusEncoder,
@@ -41,6 +42,7 @@ const SESSION_KEY = "rvp.session";
 const SERVER_KEY = "rvp.nestUrl";
 const WT_KEY = "rvp.wtUrl";
 const HASH_KEY = "rvp.wtCertHash";
+const WS_KEY = "rvp.wsUrl";
 
 type StoredSession = SessionResponse;
 
@@ -125,6 +127,9 @@ function IndexPage() {
   const [certHash, setCertHash] = useState(
     () => readStore<string>(HASH_KEY) ?? "",
   );
+  const [wsUrl, setWsUrl] = useState(
+    () => readStore<string>(WS_KEY) ?? "ws://127.0.0.1:4435/",
+  );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -157,6 +162,7 @@ function IndexPage() {
       writeStore(SERVER_KEY, nestUrl);
       writeStore(WT_KEY, wtUrl);
       writeStore(HASH_KEY, certHash);
+      writeStore(WS_KEY, wsUrl);
       const session = await login(nestUrl, userId);
       writeStore(SESSION_KEY, session);
       window.dispatchEvent(new Event("storage"));
@@ -205,6 +211,16 @@ function IndexPage() {
             onChange={(e) => setCertHash(e.target.value)}
             size={40}
             placeholder="ab:cd:ef:..."
+          />
+        </label>
+      </p>
+      <p>
+        <label>
+          WebSocket URL (UDP-blocked fallback){" "}
+          <input
+            value={wsUrl}
+            onChange={(e) => setWsUrl(e.target.value)}
+            size={32}
           />
         </label>
       </p>
@@ -307,9 +323,13 @@ function RoomPage() {
   const nestUrl = () => readStore<string>(SERVER_KEY) ?? "http://127.0.0.1:3000";
   const wtUrl = () => readStore<string>(WT_KEY) ?? "https://127.0.0.1:4434/";
   const certHash = () => readStore<string>(HASH_KEY) ?? "";
+  const wsUrl = () => readStore<string>(WS_KEY) ?? "ws://127.0.0.1:4435/";
 
   const [grant, setGrant] = useState<GrantResponse | null>(null);
   const [session_, setSession_] = useState<WtSession | null>(null);
+  const [transport, setTransport] = useState<"webtransport" | "websocket" | null>(
+    null,
+  );
   const [roster, setRoster] = useState<
     Array<{ participantId: number; userId: string }>
   >([]);
@@ -348,12 +368,25 @@ function RoomPage() {
       const g = await createGrant(nestUrl(), session.accessToken, roomId);
       setGrant(g);
 
-      const s = await connectWt({
-        url: wtUrl(),
-        certHashHex: certHash(),
-        grantJwt: g.grant,
-      });
+      // P9a: WebTransport first (QUIC CC), fall back to WebSocket when the
+      // browser or network blocks UDP (open decision 8 — degraded path).
+      let s: WtSession;
+      let used: "webtransport" | "websocket";
+      try {
+        s = await connectWt({
+          url: wtUrl(),
+          certHashHex: certHash(),
+          grantJwt: g.grant,
+        });
+        used = "webtransport";
+      } catch (wtErr) {
+        const reason = wtErr instanceof Error ? wtErr.message : String(wtErr);
+        setEvents((prev) => [...prev, `WebTransport unavailable: ${reason}`]);
+        s = await connectWs({ url: wsUrl(), grantJwt: g.grant });
+        used = "websocket";
+      }
       setSession_(s);
+      setTransport(used);
       setRoster(s.roster);
 
       // Build the pairwise key table from the grant (kid is room-wide unique).
@@ -464,6 +497,7 @@ function RoomPage() {
     void contextRef.current?.close();
     session_?.close();
     setSession_(null);
+    setTransport(null);
     setAudioActive(false);
   };
 
@@ -480,7 +514,11 @@ function RoomPage() {
         <>
           <p>
             Participant <code>{session_.participantId}</code> · max datagram{" "}
-            {session_.maxDatagram}
+            {session_.maxDatagram} · transport{" "}
+            <strong>{transport ?? "unknown"}</strong>
+            {transport === "websocket" && (
+              <small> (UDP blocked — degraded fallback, plan decision 8)</small>
+            )}
           </p>
           <h3>Roster</h3>
           <ul>
