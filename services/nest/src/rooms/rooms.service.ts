@@ -7,12 +7,17 @@ import {
 } from '@nestjs/common';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
+import { MediaNodesService } from '../media-nodes/media-nodes.service';
 
 export interface Room {
   id: string;
   name: string;
   createdBy: string;
   createdAt: Date;
+  /** P8a media-node pin (plan §2/§5). Null = unpinned (single-node). */
+  mediaNode: string | null;
+  /** P8a `host:port` of the pinned node, when resolvable from the directory. */
+  mediaAddress?: string | null;
 }
 
 export interface Member {
@@ -40,19 +45,25 @@ const USER_RE = /^[A-Za-z0-9_.-]{1,128}$/;
  */
 @Injectable()
 export class RoomsService {
-  constructor(private readonly pool: Pool) {}
+  constructor(
+    private readonly pool: Pool,
+    private readonly mediaNodes: MediaNodesService,
+  ) {}
 
   async createRoom(ownerId: string, name: string): Promise<Room> {
     if (!name || name.length > 200) {
       throw new ConflictException('name (1–200 chars) required');
     }
     const id = randomUUID();
+    // P8a: pin the room to a media node when a directory is configured
+    // (round-robin). Null = unpinned (single-node default).
+    const pin = this.mediaNodes.next();
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
       const room = await client.query<RoomRow>(
-        'INSERT INTO rooms (id, name, created_by) VALUES ($1, $2, $3) RETURNING *',
-        [id, name, ownerId],
+        'INSERT INTO rooms (id, name, created_by, media_node) VALUES ($1, $2, $3, $4) RETURNING *',
+        [id, name, ownerId, pin?.id ?? null],
       );
       await client.query(
         'INSERT INTO room_members (room_id, user_id, role) VALUES ($1, $2, $3)',
@@ -82,7 +93,15 @@ export class RoomsService {
       'SELECT user_id, role, joined_at FROM room_members WHERE room_id = $1 ORDER BY joined_at',
       [roomId],
     );
-    return { ...toRoom(row), members: members.rows.map(toMember) };
+    const out = toRoom(row);
+    // P8a: attach the pin's connect address when a directory is configured,
+    // so clients know where to dial (plan §2/§5).
+    const pin = this.mediaNodes.list().find((n) => n.id === row.media_node);
+    return {
+      ...out,
+      mediaAddress: pin?.address ?? null,
+      members: members.rows.map(toMember),
+    };
   }
 
   async addMember(
@@ -330,6 +349,7 @@ interface RoomRow {
   name: string;
   created_by: string;
   created_at: Date;
+  media_node: string | null;
 }
 
 interface MemberRow {
@@ -339,7 +359,13 @@ interface MemberRow {
 }
 
 function toRoom(row: RoomRow): Room {
-  return { id: row.id, name: row.name, createdBy: row.created_by, createdAt: row.created_at };
+  return {
+    id: row.id,
+    name: row.name,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    mediaNode: row.media_node,
+  };
 }
 
 function toMember(row: MemberRow): Member {

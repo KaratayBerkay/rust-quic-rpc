@@ -26,6 +26,8 @@ describe('rvp-nest key rotation (e2e)', () => {
     eddsaSeedHex: '00'.repeat(32),
     grantTtlSeconds: 120,
     sessionTtlSeconds: 3600,
+    mediaNodes: [],
+    mediaNodesUrl: null,
   };
 
   beforeAll(async () => {

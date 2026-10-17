@@ -27,6 +27,9 @@ describe('rvp-nest (e2e)', () => {
     eddsaSeedHex: '00'.repeat(32),
     grantTtlSeconds: 120,
     sessionTtlSeconds: 3600,
+    // Single-node default: no media-node pinning (P8a).
+    mediaNodes: [],
+    mediaNodesUrl: null,
   };
 
   beforeAll(async () => {

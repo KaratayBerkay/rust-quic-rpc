@@ -40,6 +40,8 @@ pub mod error_code {
     pub const INTERNAL: u16 = 500;
     pub const CONNECTION_LIMIT: u16 = 503;
     pub const VERSION_UNSUPPORTED: u16 = 505;
+    /// P8a: grant is pinned to a different media node (plan §2/§5).
+    pub const WRONG_NODE: u16 = 521;
 }
 
 /// A room member advertised in `Welcome` / `ParticipantJoined`.
