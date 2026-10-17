@@ -31,6 +31,7 @@ describe('rvp-nest revocation (e2e)', () => {
     sessionTtlSeconds: 3600,
     mediaNodes: [],
     mediaNodesUrl: null,
+    redisUrl: null,
   };
 
   beforeAll(async () => {
