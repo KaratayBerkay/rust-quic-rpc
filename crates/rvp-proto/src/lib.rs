@@ -22,6 +22,7 @@
 use bytes::{Bytes, BytesMut};
 
 pub mod control;
+pub mod ws;
 
 /// Fixed media-header length in bytes.
 pub const HEADER_LEN: usize = 16;
@@ -43,6 +44,8 @@ pub enum ProtoError {
     ShortBuffer { need: usize, got: usize },
     #[error("unsupported version {0}")]
     BadVersion(u8),
+    #[error("unknown ws message tag {0}")]
+    UnknownTag(u8),
 }
 
 /// Fixed 16-byte RVP/1 media header.

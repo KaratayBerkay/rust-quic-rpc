@@ -34,6 +34,7 @@ jsonwebtoken = { version = "10", default-features = false, features = ["use_pem"
 aes-gcm = "0.10"
 dashmap = "6"
 redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] }
+tokio-tungstenite = "0.30"
 metrics = "0.24"
 metrics-exporter-prometheus = "0.16"
 

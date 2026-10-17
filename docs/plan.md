@@ -196,7 +196,7 @@ Second real client: a browser **phone-call app** (login, room list, roster, mute
 - **Server change (shipped P6a):** `rvp-server` exposes a WebTransport (HTTP/3) endpoint **alongside** the raw-QUIC endpoint (`wtransport`) — same room registry, same JWT checks, same fanout, same datagram forward path (`crates/rvp-server/src/wt.rs`, transport-agnostic `ParticipantTx` trait). `rvp-cli --wt-listen <addr>` enables it; cert SHA-256 is logged for browser `serverCertificateHashes`.
 - **Opus via WebCodecs** (`AudioEncoder`/`AudioDecoder`) — 20 ms frames; **AudioWorklet** captures/plays 48 kHz mono PCM. *(shipped P6b — `apps/web/src/audio/browser-audio.ts`, `worklet-processor.ts`)*
 - **Pairwise crypto via WebCrypto** AES-GCM — same NestJS-delivered per-pair keys and `kid` rotation as Flutter (ADR-004). Pairwise cost applies too: N−1 datagrams per 20 ms frame per publisher. *(shipped P6b — `apps/web/src/lib/crypto.ts` with Rust-anchored test vector)*
-- **Fallback (open decision 8):** WebSocket + same RVP frames if WebTransport is unavailable — degraded (no QUIC CC), not v1-blocking.
+- **Fallback (open decision 8, resolved & shipped P9a):** WebSocket + same RVP frames if WebTransport is unavailable — degraded (no QUIC CC), not v1-blocking. *(shipped P9a — `rvp-server/src/ws.rs` tagged-framing endpoint via `rvp-cli --ws-listen`, `apps/web/src/lib/ws.ts` auto-fallback)*
 
 ```text
 ui → CallController (React hooks)
@@ -291,7 +291,7 @@ Deliverables (docs + decisions, no production code):
 
 **Post-v1 (deferred — in plan, not scheduled until v1 ships; see §12):**
 
-9. **P9** Connectivity fallback — TURN-like QUIC/WS relay for UDP-blocked networks
+9. **P9** Connectivity fallback — TURN-like QUIC/WS relay for UDP-blocked networks — split: **P9a** WS media relay (server endpoint + web fallback) → **P9b** Flutter WS fallback (+ real TURN/ICE if ever required) — **P9a ✅ shipped** (`rvp-server/src/ws.rs`: same `ServerState`/JWT handshake/rooms/fanout over cleartext `ws://`, 1-byte tagged framing in `rvp-proto::ws` (control chunk vs complete datagram), inbound demux with congestion-drop datagram queue, outbound `Finish` sentinel so terminal `Error` frames land before close, metrics transport label `websocket`, per-IP cap; `rvp-cli --ws-listen <addr>`; `apps/web/src/lib/ws.ts` `connectWs` returning a `WtSession`, `App.tsx` tries WebTransport first and falls back with a transport indicator + `rvp.wsUrl` setting; integration test `tests/ws_loopback.rs` (two-WS fanout/no-self-echo, quinn↔WS cross fanout + join event, bad grant → Error + close, control chunking) + Rust-anchored TS framing vectors in `ws.test.ts`)
 10. **P10** Audio quality parity — active speaker detection, Opus RED, richer ReceiverReport
 11. **P11** RVP/2 video + screen share (separate design doc before implementation)
 12. **P12** Recording/Egress — requires group-key mode decision (conflicts with pairwise E2E)
@@ -309,7 +309,7 @@ Exit criteria per phase: builds green, integration test list, runnable demo comm
 5. ~~**Media grant TTL:** 60 s vs 120 s; `jti` denylist yes/no for v1?~~ **Resolved (P7c):** TTL 120 s (`grantTtlSeconds`); denylist **yes** for v1 — Nest `grant_issues` + `GET /auth/revoked` polled by `rvp-cli --nest-revoked` into an in-memory per-process set (no Redis until P8 multi-instance; short TTL bounds any poll gap).
 6. **Phase 0 output:** markdown docs only, or also mermaid sequence diagrams?
 7. **Pairwise crypto scale limit:** at what room size (N) do we drop pairwise E2E, switch to a group key, or accept publisher uplink ×(N−1)?
-8. **Web media transport:** WebTransport/HTTP3 datagrams (recommended, real QUIC semantics) vs WebSocket binary fallback for v1?
+8. ~~**Web media transport:** WebTransport/HTTP3 datagrams (recommended, real QUIC semantics) vs WebSocket binary fallback for v1?~~ **Resolved (P9a):** WebTransport is the primary path (real QUIC semantics); WebSocket is the **fallback** shipped for UDP-blocked networks — `connectWs` returns the same `WtSession` shape over `ws://` with 1-byte tagged framing, and `App.tsx` tries WebTransport first, then falls back. Degraded (reliable ordered delivery, no QUIC CC, `ws://` cleartext — TLS at the edge for production), as planned since §7.
 9. ~~**Web app shape:** TanStack Start (SSR) vs pure Vite SPA (simpler deploy, call app is client-heavy anyway)?~~ **Resolved (P6a):** Vite SPA — call app is client-heavy, no SSR needed, simpler static deploy.
 10. ~~**Scope freeze:** commit to audio-only v1 or schedule gap phases P9–P11 now?~~ **Resolved:** audio-only v1 (P1–P8); connectivity fallback, speaker detection, video, and recording are **in the plan as deferred post-v1 phases P9–P12** (§10) — start only after v1 ships and product asks for them.
 
@@ -338,7 +338,7 @@ LiveKit = mature open-source **WebRTC** SFU (Go/Pion) with a large SDK/ecosystem
 | Webhooks / room events API | ✅ | ⚠️ Redis events → NestJS (P8) | Partial |
 | Moderation APIs | ✅ | ⚠️ Mute/Leave + host kick via jti denylist (P7c PR1) | Partial |
 | Prometheus / observability | ✅ | ✅ tracing + metrics (P7a shipped: `rvp-metrics` + `--metrics-listen`) | Have |
-| TURN / TCP-TLS fallback for blocked networks | ✅ ICE + TURN UDP/TCP/TLS | ❌ QUIC/UDP only; web WS fallback is decision 8 | **Gap → P9** |
+| TURN / TCP-TLS fallback for blocked networks | ✅ ICE + TURN UDP/TCP/TLS | ⚠️ WS media relay shipped P9a (`--ws-listen`, web auto-fallback); no ICE/TURN yet (P9b) | **Partial → P9b** |
 | Client SDK ecosystem | ✅ JS, Flutter, RN, Rust, C++, Unity, Swift/Kotlin | ⚠️ own Flutter plugin + TanStack web + Rust test clients | Gap (by design) |
 | AI Agents framework | ✅ | ❌ | Out of scope |
 | Video (simulcast, SVC VP9/AV1, dynacast) | ✅ | ❌ audio-only | **Gap → P11 (RVP/2)** |
@@ -347,7 +347,7 @@ LiveKit = mature open-source **WebRTC** SFU (Go/Pion) with a large SDK/ecosystem
 
 ### 12.2 Gap phases (deferred to post-v1 — added to §10 as P9–P12)
 
-- **P9 — Connectivity fallback:** a TURN-like relay (QUIC relay or WS media relay) for UDP-blocked/CGNAT networks; without it some mobile networks simply won't connect. Highest product risk of all gaps.
+- **P9 — Connectivity fallback:** a TURN-like relay (QUIC relay or WS media relay) for UDP-blocked/CGNAT networks; without it some mobile networks simply won't connect. Highest product risk of all gaps. **P9a shipped:** WS media relay + web auto-fallback (server `--ws-listen`, `connectWs`); **P9b** (Flutter WS fallback, real TURN/ICE) remains open.
 - **P10 — Audio quality parity:** active speaker detection (server measures arrival energy or clients send level in `Rsvd`/flags), Opus RED, richer `ReceiverReport`.
 - **P11 — RVP/2 video (only if product demands it):** new packet types for keyframe/simulcast layers, client-side encode; server remains forwarder (no transcode). Large effort — treat as a separate design doc, not an extension.
 - **P12 — Recording:** requires a **group-key mode** (server can decrypt) or client-side upload; conflicts with pairwise E2E by design — decide explicitly if ever needed.
