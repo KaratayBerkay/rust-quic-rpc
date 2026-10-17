@@ -14,6 +14,12 @@
  * RVP_MEDIA_NODES_URL — optional `http://host:port/nodes` JSON endpoint
  *                 (`{"nodes":[{"id":"node-1","address":"host:4433"}]}`)
  *                 polled every 15s for the same purpose (P8a directory).
+ * REDIS_URL       — optional `redis://host:port` (P8b multi-instance). When
+ *                 set, the media-node directory lives in Redis (media nodes
+ *                 self-register with a TTL) and revocation kicks are published
+ *                 on `rvp:revocations` so every media node sees them. Empty
+ *                 = single-node: static MEDIA_NODES / RVP_MEDIA_NODES_URL and
+ *                 the 30 s HTTP revocation poll keep working unchanged.
  */
 export interface AppConfig {
   databaseUrl: string;
@@ -23,6 +29,7 @@ export interface AppConfig {
   sessionTtlSeconds: number;
   mediaNodes: string[];
   mediaNodesUrl: string | null;
+  redisUrl: string | null;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
@@ -42,5 +49,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     sessionTtlSeconds: Number(env.SESSION_TTL_SECONDS ?? 86400),
     mediaNodes,
     mediaNodesUrl: env.RVP_MEDIA_NODES_URL ?? null,
+    redisUrl: env.REDIS_URL ?? null,
   };
 }

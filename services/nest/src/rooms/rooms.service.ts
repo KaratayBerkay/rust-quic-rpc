@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
@@ -8,6 +7,7 @@ import {
 import { randomBytes, randomUUID } from 'node:crypto';
 import { Pool } from 'pg';
 import { MediaNodesService } from '../media-nodes/media-nodes.service';
+import { RevocationService } from '../grants/revocation.service';
 
 export interface Room {
   id: string;
@@ -42,12 +42,16 @@ const USER_RE = /^[A-Za-z0-9_.-]{1,128}$/;
  * Pairwise keys are ordered (userA < userB), one row per pair, kid dense
  * per-room from 1 (media-header byte3, P4b). Keys are created on demand
  * when a grant is issued for a new pair and never leave the two members.
+ *
+ * Moderation (`kickMember`) is delegated to `RevocationService` (P8b), which
+ * also publishes the revoked jtis to every media node over Redis.
  */
 @Injectable()
 export class RoomsService {
   constructor(
     private readonly pool: Pool,
     private readonly mediaNodes: MediaNodesService,
+    private readonly revocations: RevocationService,
   ) {}
 
   async createRoom(ownerId: string, name: string): Promise<Room> {
@@ -138,68 +142,16 @@ export class RoomsService {
   }
 
   /**
-   * Kick a member (P7c moderation, plan §6): remove their membership and
-   * revoke their unexpired media grants for this room in one transaction.
-   * The next `rvp-cli --nest-revoked` poll then closes their live media
-   * session and blocks rejoin until a host re-adds them (a fresh grant is
-   * recorded unrevoked, so re-adding fully restores access).
-   *
-   * Only a host may kick, and not themselves. A grant issued in the same
-   * instant as the kick can slip past the revoke (membership is checked
-   * before its jti insert); the short grant TTL bounds that window.
+   * Kick a member (P7c moderation, plan §6): delegate to `RevocationService`,
+   * which removes membership, revokes unexpired media grants, and (P8b)
+   * publishes the revoked jtis to every media node over Redis.
    */
-  async kickMember(
+  kickMember(
     roomId: string,
     requesterId: string,
     userId: string,
   ): Promise<{ userId: string; revokedGrants: number }> {
-    if (!UUID_RE.test(roomId)) {
-      throw new NotFoundException('room not found');
-    }
-    if (!USER_RE.test(userId)) {
-      throw new ConflictException('invalid userId');
-    }
-    if (userId === requesterId) {
-      throw new BadRequestException('cannot kick yourself');
-    }
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
-      const requester = await client.query<{ role: 'host' | 'member' }>(
-        'SELECT role FROM room_members WHERE room_id = $1 AND user_id = $2',
-        [roomId, requesterId],
-      );
-      if (!requester.rows[0]) {
-        throw new ForbiddenException('not a member of this room');
-      }
-      if (requester.rows[0].role !== 'host') {
-        throw new ForbiddenException('only a host can kick');
-      }
-      const target = await client.query(
-        'SELECT 1 FROM room_members WHERE room_id = $1 AND user_id = $2',
-        [roomId, userId],
-      );
-      if (!target.rows[0]) {
-        throw new NotFoundException('user is not a member of this room');
-      }
-      const revoked = await client.query(
-        `UPDATE grant_issues SET revoked_at = now()
-         WHERE room_id = $1 AND user_id = $2
-           AND revoked_at IS NULL AND expires_at > now()`,
-        [roomId, userId],
-      );
-      await client.query(
-        'DELETE FROM room_members WHERE room_id = $1 AND user_id = $2',
-        [roomId, userId],
-      );
-      await client.query('COMMIT');
-      return { userId, revokedGrants: revoked.rowCount ?? 0 };
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
+    return this.revocations.kickMember(roomId, requesterId, userId);
   }
 
   async memberRole(roomId: string, userId: string): Promise<'host' | 'member'> {

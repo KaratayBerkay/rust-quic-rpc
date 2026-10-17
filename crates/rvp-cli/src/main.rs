@@ -18,6 +18,8 @@ use std::time::Duration;
 use clap::Parser;
 use tracing::{info, warn};
 
+mod redis;
+
 const JWKS_REFRESH: Duration = Duration::from_secs(300);
 const REVOKED_POLL: Duration = Duration::from_secs(30);
 
@@ -67,6 +69,12 @@ struct Args {
     /// claim differs (the client reconnects to the pinned node). Empty = off.
     #[arg(long, default_value = "")]
     node_id: String,
+    /// P8b Redis URL (e.g. `redis://127.0.0.1:6379`). When set, the node
+    /// self-registers into the directory (`rvp:node:<id>`, TTL heartbeats) and
+    /// subscribes to `rvp:revocations` so kicks land immediately across
+    /// instances. Empty = single-node (unchanged behaviour).
+    #[arg(long, default_value = "")]
+    redis_url: String,
 }
 
 #[tokio::main]
@@ -134,6 +142,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
     info!(addr = %server.local_addr(), "quic endpoint up");
+    // P8b: register into the Redis directory + subscribe to revocations.
+    if !args.redis_url.is_empty() {
+        // Advertise the address clients actually dial (wt if set, else QUIC).
+        let advertised = args.wt_listen.unwrap_or(server.local_addr()).to_string();
+        if args.node_id.is_empty() {
+            warn!("--redis-url set without --node-id; directory registration needs an identity");
+        } else {
+            redis::spawn_directory_registration(
+                args.redis_url.clone(),
+                args.node_id.clone(),
+                advertised,
+            )
+            .await;
+            info!(node_id = %args.node_id, "P8b directory registration started");
+        }
+        redis::spawn_revocation_subscription(args.redis_url.clone(), Arc::clone(&state)).await;
+        info!("P8b revocation subscription started");
+    }
     let wt = match args.wt_listen {
         Some(addr) => {
             let wt = rvp_server::wt::start_wt_server(addr, state).await?;

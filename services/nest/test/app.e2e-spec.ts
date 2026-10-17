@@ -30,6 +30,7 @@ describe('rvp-nest (e2e)', () => {
     // Single-node default: no media-node pinning (P8a).
     mediaNodes: [],
     mediaNodesUrl: null,
+    redisUrl: null,
   };
 
   beforeAll(async () => {

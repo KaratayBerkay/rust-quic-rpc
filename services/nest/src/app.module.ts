@@ -12,7 +12,10 @@ import { RoomsService } from './rooms/rooms.service';
 import { KeysController } from './rooms/keys.controller';
 import { GrantsController } from './grants/grants.controller';
 import { GrantIssuesService } from './grants/grant-issues.service';
+import { RevocationService } from './grants/revocation.service';
 import { MediaNodesService } from './media-nodes/media-nodes.service';
+import { RedisService } from './redis/redis.service';
+import { DirectoryService } from './redis/directory.service';
 
 @Module({
   controllers: [AuthController, RoomsController, KeysController, GrantsController],
@@ -34,7 +37,10 @@ import { MediaNodesService } from './media-nodes/media-nodes.service';
     },
     RoomsService,
     GrantIssuesService,
+    RevocationService,
     MediaNodesService,
+    RedisService,
+    DirectoryService,
     { provide: APP_GUARD, useClass: SessionGuard },
   ],
 })
