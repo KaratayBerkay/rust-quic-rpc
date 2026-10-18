@@ -1,16 +1,20 @@
 /// Orchestrates a demo voice call: sessions + [VoicePipeline]s + device audio.
 ///
-/// Two modes (plan §4 / P4b demo):
-/// - **loopback**: one device runs both `alice` and `bob` through the SFU —
-///   mic → alice → network → bob → speaker (self-echo over the wire).
-/// - **two-device**: this device runs one user; the peer joins from elsewhere
-///   with the same harness grants.
+/// Three modes:
+/// - **loopback** (harness): one device runs both `alice` and `bob` through
+///   the SFU — mic → alice → network → bob → speaker.
+/// - **two-device** (harness): this device runs one harness user; the peer
+///   joins from another device with the same harness grants.
+/// - **nest** (plan §5): grants + pairwise keys come from the NestJS control
+///   plane, so this device joins the **same room with the same keys as the
+///   web client** — the real cross-device call path.
 ///
-/// Key rotation (P7c, plan §5): [VoiceCall.rotateKeys] hits the harness
-/// `POST /rotate`, re-applies the fresh pairwise keys, and announces
-/// `KeyUpdate` on the control stream; a `KeyUpdate` received from the peer
-/// re-fetches `/state` and swaps the pipeline keys (old kids stay receivable
-/// for in-flight datagrams).
+/// Key rotation (P7c, plan §5): harness modes hit the harness
+/// `POST /rotate`; nest mode hits Nest `POST /rooms/:id/keys/rotate`. Either
+/// way the fresh keys land in the pipeline and `KeyUpdate{kid}` is announced
+/// on the control stream; a received `KeyUpdate` re-pulls keys (harness
+/// `GET /state`, nest `GET /rooms/:id/keys`) and swaps them in (old kids
+/// stay receivable for in-flight datagrams).
 library;
 
 import 'dart:async';
@@ -20,6 +24,7 @@ import 'package:rvp_flutter_quic/rvp_flutter_quic.dart';
 
 import 'audio_io.dart';
 import 'harness_client.dart';
+import 'nest_client.dart';
 
 typedef LogFn = void Function(String message);
 
@@ -31,9 +36,9 @@ class VoiceCall {
     required this.mic,
     required this.speaker,
     required this.log,
-    required this.stateUrl,
-    required this.applyKeys,
-    required this.secondaryApplyKeys,
+    required this.rotate,
+    required this.refresh,
+    this.role,
   });
 
   final String user;
@@ -42,14 +47,29 @@ class VoiceCall {
   final Mic mic;
   final Speaker speaker;
   final LogFn log;
-  final String stateUrl;
-  final Future<void> Function(HarnessState) applyKeys;
-  final Future<void> Function(HarnessState)? secondaryApplyKeys;
+
+  /// Grant role (`host`/`member`) in nest mode; null in harness modes.
+  final String? role;
+
+  /// Rotate keys, apply them, announce `KeyUpdate` (wired per mode).
+  final Future<void> Function() rotate;
+
+  /// Re-pull keys from the control plane and apply them (on remote
+  /// `KeyUpdate`).
+  final Future<void> Function() refresh;
+
   final List<StreamSubscription<ControlMessage>> _keySubs = [];
 
   /// Whether the local mic is muted.
   bool get muted => pipeline.muted;
   set muted(bool value) => pipeline.muted;
+
+  /// Host-only key rotation (nest mode; harness modes always allow it).
+  bool get canRotate => role != 'member';
+
+  /// Rotate every pairwise key, apply the fresh ones, and announce
+  /// `KeyUpdate{kid}` on the control stream (plan §5, P7c).
+  Future<void> rotateKeys() => rotate();
 
   /// Loopback on this device: alice sends, bob plays (plan §4 demo).
   static Future<VoiceCall> loopback({
@@ -138,9 +158,19 @@ class VoiceCall {
       mic: mic,
       speaker: speaker,
       log: log,
-      stateUrl: stateUrl,
-      applyKeys: applyKeys,
-      secondaryApplyKeys: applyKeys,
+      rotate: () async {
+        final fresh = await HarnessState.rotate(stateUrl);
+        await applyKeys(fresh);
+        final maxKid =
+            fresh.pairs.fold<int>(0, (m, p) => p.kid > m ? p.kid : m);
+        if (maxKid > 0) {
+          await alice.sendKeyUpdate(maxKid);
+          log('rotated keys, announced kid=$maxKid');
+        }
+      },
+      refresh: () async {
+        await applyKeys(await HarnessState.fetch(stateUrl));
+      },
     )._withSecondary(bob, bobPipe);
     call._watchKeyUpdates([alice, bob]);
     return call;
@@ -217,40 +247,138 @@ class VoiceCall {
       mic: mic,
       speaker: speaker,
       log: log,
-      stateUrl: stateUrl,
-      applyKeys: applyKeys,
-      secondaryApplyKeys: null,
+      rotate: () async {
+        final fresh = await HarnessState.rotate(stateUrl);
+        await applyKeys(fresh);
+        final maxKid =
+            fresh.pairs.fold<int>(0, (m, p) => p.kid > m ? p.kid : m);
+        if (maxKid > 0) {
+          await session.sendKeyUpdate(maxKid);
+          log('rotated keys, announced kid=$maxKid');
+        }
+      },
+      refresh: () async {
+        await applyKeys(await HarnessState.fetch(stateUrl));
+      },
     );
     call._watchKeyUpdates([session]);
     return call;
   }
 
-  /// Rotate every pairwise key via the harness `POST /rotate` (P7c), swap
-  /// the fresh keys into the local pipelines, and announce `KeyUpdate` on
-  /// the control stream so the peer re-fetches and swaps too (plan §5).
-  Future<void> rotateKeys() async {
-    final fresh = await HarnessState.rotate(stateUrl);
-    await applyKeys(fresh);
-    await secondaryApplyKeys?.call(fresh);
-    final maxKid = fresh.pairs.fold<int>(0, (m, p) => p.kid > m ? p.kid : m);
-    if (maxKid > 0) {
-      await session.sendKeyUpdate(maxKid);
-      log('rotated keys, announced kid=$maxKid');
+  /// Plan §5 Nest mode: join the room from [grant] (fetched by the caller
+  /// via [NestClient.createGrant]) with pairwise keys mapped onto whoever is
+  /// in the welcome roster; late joiners and `KeyUpdate` pull fresh keys
+  /// from Nest so the call works regardless of join order.
+  static Future<VoiceCall> nest({
+    required NestClient client,
+    required NestSession control,
+    required NestGrant grant,
+    required String address,
+    required LogFn log,
+  }) async {
+    await initRustLib();
+    await ensureOpusInitialized();
+
+    log('connecting ${grant.userId} to $address (room ${grant.roomId})');
+    final media = await RvpSession.connect(
+      address: address,
+      serverName: 'localhost',
+      grantJwt: grant.grant,
+    );
+    log('joined room ${grant.roomId}: pid=${media.welcome.participantId}, '
+        'role=${grant.role}, pairs=${grant.pairs.length}');
+
+    final speaker = Speaker();
+    await speaker.open();
+
+    final pipeline = VoicePipeline(
+      sendDatagram: media.sendDatagram,
+      datagrams: media.datagrams,
+      onPlaybackPcm: speaker.play,
+    );
+
+    // Latest known pairwise keys (grant snapshot, refreshed from Nest on
+    // join/KeyUpdate) and userId → participantId from roster + events.
+    var latest = List<NestPairKey>.of(grant.pairs);
+    final pidOf = <String, int>{
+      for (final e in media.welcome.roster) e.userId: e.participantId,
+    };
+
+    Future<void> applyKeys() async {
+      final slots = resolvePeerKeys(pairs: latest, userIdToParticipantId: pidOf);
+      for (final slot in slots) {
+        await pipeline.addPeerBytes(
+          slot.participantId,
+          kid: slot.kid,
+          key: slot.key,
+        );
+      }
+      log('keys applied: ${slots.length} peer(s)');
     }
+
+    Future<void> refresh() async {
+      latest = await client.fetchPairKeys(control, grant.roomId);
+      await applyKeys();
+    }
+
+    await applyKeys();
+    pipeline.start();
+
+    final mic = Mic(onFrame: (frame) {
+      pipeline.pushPcm(frame).catchError((Object e) {
+        log('send error: $e');
+      });
+    });
+    await mic.start();
+
+    log('live as ${grant.userId} (role=${grant.role})');
+
+    final call = VoiceCall._(
+      user: grant.userId,
+      session: media,
+      pipeline: pipeline,
+      mic: mic,
+      speaker: speaker,
+      log: log,
+      role: grant.role,
+      rotate: () async {
+        // Host-only on the Nest side; members get an HTTP 403.
+        final fresh = await client.rotatePairKeys(control, grant.roomId);
+        latest = fresh;
+        await applyKeys();
+        final maxKid = fresh.fold<int>(0, (m, p) => p.kid > m ? p.kid : m);
+        if (maxKid > 0) {
+          await media.sendKeyUpdate(maxKid);
+          log('rotated keys, announced kid=$maxKid');
+        }
+      },
+      refresh: refresh,
+    );
+
+    // Late joiner: pair keys follow room membership, so pull the authoritative
+    // set from Nest instead of trusting the grant-time snapshot.
+    call._keySubs.add(media.messages.listen((msg) {
+      if (msg is ParticipantJoinedMessage) {
+        pidOf[msg.userId] = msg.participantId;
+        log('participantJoined ${msg.userId} (pid=${msg.participantId})');
+        refresh().catchError((Object e) {
+          log('key pull on join failed: $e');
+        });
+      }
+    }));
+    call._watchKeyUpdates([media]);
+    return call;
   }
 
-  /// On a relayed `KeyUpdate` from the peer: re-fetch `/state` and swap the
-  /// pipeline keys. The old kid stays receivable for in-flight datagrams.
+  /// On a relayed `KeyUpdate` from a peer: re-pull keys and swap them in.
+  /// The old kid stays receivable for in-flight datagrams.
   void _watchKeyUpdates(List<RvpSession> sessions) {
     for (final s in sessions) {
       _keySubs.add(
         s.messages.listen((msg) {
           if (msg is KeyUpdateMessage) {
             log('keyUpdate received (kid=${msg.kid}), pulling fresh keys');
-            HarnessState.fetch(stateUrl).then((fresh) async {
-              await applyKeys(fresh);
-              await secondaryApplyKeys?.call(fresh);
-            }).catchError((Object e) {
+            refresh().catchError((Object e) {
               log('key pull failed: $e');
             });
           }
