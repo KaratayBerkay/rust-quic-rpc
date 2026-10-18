@@ -2,6 +2,14 @@
  * NestJS control-plane client (plan §5, P5 endpoints).
  */
 
+/** Raw `POST /auth/login` response (`services/nest/src/auth/auth.controller.ts`). */
+interface LoginRawResponse {
+  token: string;
+  userId: string;
+  ttlSeconds: number;
+}
+
+/** Normalized session used by the app (maps Nest's `token` → `accessToken`). */
 export interface SessionResponse {
   accessToken: string;
   expiresAt: number;
@@ -78,11 +86,19 @@ async function request<T>(
   return (await res.json()) as T;
 }
 
-export function login(baseUrl: string, userId: string): Promise<SessionResponse> {
-  return request<SessionResponse>(baseUrl, "/auth/login", {
+export async function login(
+  baseUrl: string,
+  userId: string,
+): Promise<SessionResponse> {
+  const raw = await request<LoginRawResponse>(baseUrl, "/auth/login", {
     method: "POST",
     body: JSON.stringify({ userId }),
   });
+  return {
+    accessToken: raw.token,
+    userId: raw.userId,
+    expiresAt: Math.floor(Date.now() / 1000) + raw.ttlSeconds,
+  };
 }
 
 export function createRoom(
