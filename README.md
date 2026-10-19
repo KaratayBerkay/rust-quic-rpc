@@ -27,6 +27,7 @@ Documented honestly in [`docs/plan.md` §12](docs/plan.md): LiveKit is the right
 - **One PR per phase** on branch `phase/P<N>-<slug>` (e.g. `phase/P1-quic-echo`) — never push code straight to `main`.
 - **Husky hooks:** `pre-commit` runs markdownlint; `commit-msg` enforces [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `docs:`, `fix:`, `test:`, `ci:` …).
 - **GitHub Actions CI** (`.github/workflows/ci.yml`): docs lint + commitlint on every PR; Rust/Flutter/web/Nest jobs activate automatically when their directories appear.
+- **Deployment:** single-box runbook (Postgres + Nest + `rvp-cli` + Nginx Proxy Manager + clients) in [`docs/deploy.md`](docs/deploy.md).
 
 ```bash
 npm install        # installs tooling + husky hooks
